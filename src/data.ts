@@ -113,7 +113,9 @@ export const demoRecipes: Recipe[] = [
 ]
 
 export const initialAppData: AppData = {
-  recipes: demoRecipes,
+  // Shared demo recipes are loaded from public.recipes; keep this empty so new
+  // profiles do not get a redundant private copy of the global catalog.
+  recipes: [],
   pantry: ['garlic', 'spinach', 'couscous', 'chickpeas', 'plain yogurt', 'lemon', 'cucumber', 'dill', 'olive oil'],
   shopping: [
     { id: 'shop-parmesan', name: 'parmesan', checked: false },

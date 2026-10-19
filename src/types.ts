@@ -15,6 +15,8 @@ export type Recipe = {
   ingredients: Ingredient[]
 }
 
+export type UserRole = 'member' | 'admin'
+
 export type ShoppingItem = {
   id: string
   name: string

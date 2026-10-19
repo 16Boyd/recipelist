@@ -1,7 +1,4 @@
-import { initialAppData } from './data'
 import type { AppData, Ingredient, Recipe, RecipeMatch, ShoppingItem } from './types'
-
-const STORAGE_KEY = 'recipelist.app-data.v1'
 
 export function normalizeName(value: string): string {
   return value
@@ -40,37 +37,20 @@ function validRecipe(value: unknown): value is Recipe {
       && typeof item.amount === 'string')
 }
 
-export function loadAppData(): AppData {
-  try {
-    const saved = window.localStorage.getItem(STORAGE_KEY)
-    if (!saved) return initialAppData
-    const parsed: unknown = JSON.parse(saved)
-    if (!parsed || typeof parsed !== 'object') return initialAppData
-    const candidate = parsed as Partial<AppData>
-    return {
-      recipes: Array.isArray(candidate.recipes) ? candidate.recipes.filter(validRecipe) : initialAppData.recipes,
-      pantry: Array.isArray(candidate.pantry)
-        ? candidate.pantry.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
-        : initialAppData.pantry,
-      shopping: Array.isArray(candidate.shopping)
-        ? candidate.shopping.filter((item): item is ShoppingItem => Boolean(item)
-          && typeof item === 'object'
-          && typeof item.id === 'string'
-          && typeof item.name === 'string'
-          && typeof item.checked === 'boolean')
-        : initialAppData.shopping,
-    }
-  } catch {
-    return initialAppData
+export function parseAppData(value: unknown): AppData {
+  if (!value || typeof value !== 'object') throw new Error('Your saved kitchen data has an invalid format.')
+  const candidate = value as Partial<AppData>
+  const validShoppingItem = (item: unknown): item is ShoppingItem => Boolean(item)
+    && typeof item === 'object'
+    && typeof (item as ShoppingItem).id === 'string'
+    && typeof (item as ShoppingItem).name === 'string'
+    && typeof (item as ShoppingItem).checked === 'boolean'
+  if (!Array.isArray(candidate.recipes) || !candidate.recipes.every(validRecipe)
+    || !Array.isArray(candidate.pantry) || !candidate.pantry.every((item) => typeof item === 'string' && Boolean(item.trim()))
+    || !Array.isArray(candidate.shopping) || !candidate.shopping.every(validShoppingItem)) {
+    throw new Error('Your saved kitchen data is incomplete or invalid.')
   }
-}
-
-export function saveAppData(data: AppData): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-  } catch {
-    // The app remains usable in private browsing or when storage is unavailable.
-  }
+  return { recipes: candidate.recipes, pantry: candidate.pantry, shopping: candidate.shopping }
 }
 
 export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[] {

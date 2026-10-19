@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { createId, loadAppData, makeRecipe, matchRecipes, normalizeName, saveAppData } from './lib'
-import type { AppData, Ingredient, Recipe, RecipeMatch } from './types'
+import type { User } from '@supabase/supabase-js'
+import AuthGate, { InvitePasswordSetup } from './AuthGate'
+import { createId, makeRecipe, matchRecipes, normalizeName } from './lib'
+import MfaGate from './MfaGate'
+import { loadProfile, saveProfile } from './profileStorage'
+import { hasTotpAal2, inviteRedirectDetected, supabase, supabaseConfigured } from './supabase'
+import { initialAppData } from './data'
+import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from './recipeStorage'
+import type { AppData, Ingredient, Recipe, RecipeMatch, UserRole } from './types'
 
 type Section = 'discover' | 'recipes' | 'pantry' | 'shopping'
 
@@ -33,8 +40,445 @@ function Icon({ name, size = 20 }: { name: 'sparkle' | 'book' | 'basket' | 'bag'
   return <svg {...common}>{paths[name]}</svg>
 }
 
+type ProfileStatus = 'loading' | 'ready' | 'error'
+type SaveStatus = 'saved' | 'saving' | 'error'
+type AssuranceStatus = 'checking' | 'aal1' | 'aal2' | 'error'
+// This key stores only the invite password-step flag, never profile or kitchen data.
+const INVITE_PASSWORD_SETUP_KEY = 'recipelist.invite-password-setup.'
+
+function hasPendingInvitePasswordSetup(userId: string): boolean {
+  try {
+    return window.localStorage.getItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`) === 'pending'
+  } catch {
+    return false
+  }
+}
+
+function markInvitePasswordSetupPending(userId: string): void {
+  try {
+    window.localStorage.setItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`, 'pending')
+  } catch {
+    // The in-memory gate still protects the active invitation flow.
+  }
+}
+
+function clearPendingInvitePasswordSetup(userId: string): void {
+  try {
+    window.localStorage.removeItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`)
+  } catch {
+    // The in-memory gate still protects the active invitation flow.
+  }
+}
+
+function clearInviteRedirectMarker() {
+  const url = new URL(window.location.href)
+  if (url.searchParams.get('type') === 'invite') url.searchParams.delete('type')
+  if (url.hash) {
+    const hash = new URLSearchParams(url.hash.slice(1))
+    if (hash.get('type') === 'invite') {
+      hash.delete('type')
+      url.hash = hash.toString()
+    }
+  }
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
 function App() {
-  const [data, setData] = useState<AppData>(() => loadAppData())
+  const [authResolved, setAuthResolved] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
+  const [assuranceStatus, setAssuranceStatus] = useState<AssuranceStatus>('checking')
+  const [assuranceError, setAssuranceError] = useState('')
+  const [assuranceAttempt, setAssuranceAttempt] = useState(0)
+  const [inviteSetupUserId, setInviteSetupUserId] = useState<string | null>(null)
+  const [inviteCallbackPending, setInviteCallbackPending] = useState(inviteRedirectDetected)
+  const [data, setData] = useState<AppData | null>(null)
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus>('loading')
+  const [profileError, setProfileError] = useState('')
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
+  const [profileAttempt, setProfileAttempt] = useState(0)
+  const [saveAttempt, setSaveAttempt] = useState(0)
+  const [accountError, setAccountError] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
+  const generation = useRef(0)
+  const assuranceRequest = useRef(0)
+  const inviteSetupUserIdRef = useRef<string | null>(null)
+  const inviteRedirectPending = useRef(inviteRedirectDetected)
+  const editRevision = useRef(0)
+  const savedRevision = useRef(0)
+  const activeUserId = useRef<string | null>(null)
+  const saveTimer = useRef<number | null>(null)
+  const activeFlush = useRef<Promise<boolean> | null>(null)
+  const signingOutRef = useRef(false)
+  const profileSnapshot = useRef<{ userId: string | null; data: AppData | null; loadedUserId: string | null; status: ProfileStatus; assuranceStatus: AssuranceStatus; generation: number }>({ userId: null, data: null, loadedUserId: null, status: 'loading', assuranceStatus, generation: 0 })
+  profileSnapshot.current = { userId: user?.id ?? null, data, loadedUserId, status: profileStatus, assuranceStatus, generation: generation.current }
+  const inviteSetupRequired = Boolean(user && inviteSetupUserId === user.id)
+
+  function captureInviteCallbackUser(event: string | null, userId: string | null) {
+    if (event === 'SIGNED_IN' && inviteRedirectPending.current && userId) {
+      markInvitePasswordSetupPending(userId)
+      inviteSetupUserIdRef.current = userId
+      setInviteSetupUserId(userId)
+      inviteRedirectPending.current = false
+      setInviteCallbackPending(false)
+    }
+  }
+
+  function expireUnclaimedInviteRedirect() {
+    window.setTimeout(() => {
+      if (!inviteRedirectPending.current) return
+      inviteRedirectPending.current = false
+      setInviteCallbackPending(false)
+      clearInviteRedirectMarker()
+    }, 0)
+  }
+
+  function clearInviteSetup() {
+    inviteSetupUserIdRef.current = null
+    setInviteSetupUserId(null)
+  }
+
+  function restoreInviteSetupForUser(userId: string | null) {
+    if (userId && hasPendingInvitePasswordSetup(userId)) {
+      inviteSetupUserIdRef.current = userId
+      setInviteSetupUserId(userId)
+    } else if (inviteSetupUserIdRef.current && inviteSetupUserIdRef.current !== userId) {
+      clearInviteSetup()
+    }
+  }
+
+  function resetProfileAccess(nextAssurance: 'aal1' | 'error') {
+    generation.current += 1
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    activeFlush.current = null
+    profileSnapshot.current = {
+      ...profileSnapshot.current,
+      data: null,
+      loadedUserId: null,
+      status: 'loading',
+      assuranceStatus: nextAssurance,
+      generation: generation.current,
+    }
+    setData(null)
+    setLoadedUserId(null)
+    setProfileStatus('loading')
+    setProfileError('')
+    setSaveStatus('saved')
+  }
+
+  useEffect(() => {
+    if (!supabase) return
+    let eventReceived = false
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // Keep this callback synchronous. Assurance and profile checks happen in effects below.
+      eventReceived = true
+      const nextUser = session?.user ?? null
+      const nextUserId = nextUser?.id ?? null
+      captureInviteCallbackUser(event, nextUserId)
+      restoreInviteSetupForUser(nextUserId)
+      if (event === 'INITIAL_SESSION' && inviteRedirectPending.current) expireUnclaimedInviteRedirect()
+      const userChanged = activeUserId.current !== nextUserId
+      assuranceRequest.current += 1
+      generation.current += 1
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current)
+        saveTimer.current = null
+      }
+      // Detach the prior promise. An already-issued update cannot be cancelled,
+      // but the generation guard ignores its result and a later retry can queue.
+      activeFlush.current = null
+      if (userChanged) {
+        activeUserId.current = nextUserId
+        savedRevision.current = editRevision.current
+        setData(null)
+        setLoadedUserId(null)
+        setProfileStatus('loading')
+        setProfileError('')
+        setSaveStatus('saved')
+        setAccountError('')
+      }
+      const nextAssurance: AssuranceStatus = nextUser ? 'checking' : 'aal1'
+      profileSnapshot.current = {
+        ...profileSnapshot.current,
+        userId: nextUserId,
+        data: userChanged ? null : profileSnapshot.current.data,
+        loadedUserId: userChanged ? null : profileSnapshot.current.loadedUserId,
+        status: userChanged ? 'loading' : profileSnapshot.current.status,
+        assuranceStatus: nextAssurance,
+        generation: generation.current,
+      }
+      setAssuranceStatus(nextAssurance)
+      setAssuranceError('')
+      if (nextUser) setAssuranceAttempt((attempt) => attempt + 1)
+      setUser(nextUser)
+      setAuthResolved(true)
+    })
+    void supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (eventReceived) return
+      if (error) setProfileError(error.message)
+      const nextUser = session?.user ?? null
+      restoreInviteSetupForUser(nextUser?.id ?? null)
+      if (inviteRedirectPending.current) expireUnclaimedInviteRedirect()
+      activeUserId.current = nextUser?.id ?? null
+      setUser(nextUser)
+      setAuthResolved(true)
+    }).catch((error: unknown) => {
+      if (eventReceived) return
+      if (inviteRedirectPending.current) expireUnclaimedInviteRedirect()
+      setProfileError(error instanceof Error ? error.message : 'Could not check your sign-in session.')
+      activeUserId.current = null
+      setAuthResolved(true)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!authResolved || !user || !supabase) return
+    let cancelled = false
+    const request = ++assuranceRequest.current
+    setAssuranceStatus('checking')
+    void supabase.auth.mfa.getAuthenticatorAssuranceLevel().then(({ data: assurance, error }) => {
+      if (cancelled || request !== assuranceRequest.current) return
+      if (error) throw error
+      if (hasTotpAal2(assurance)) {
+        setAssuranceError('')
+        profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'aal2' }
+        setAssuranceStatus('aal2')
+        return
+      }
+
+      generation.current += 1
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current)
+        saveTimer.current = null
+      }
+      activeFlush.current = null
+      profileSnapshot.current = {
+        ...profileSnapshot.current,
+        data: null,
+        loadedUserId: null,
+        status: 'loading',
+        assuranceStatus: 'aal1',
+        generation: generation.current,
+      }
+      setData(null)
+      setLoadedUserId(null)
+      setProfileStatus('loading')
+      setProfileError('')
+      setSaveStatus('saved')
+      setAssuranceError('')
+      setAssuranceStatus('aal1')
+    }).catch((error: unknown) => {
+      if (cancelled || request !== assuranceRequest.current) return
+      generation.current += 1
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current)
+        saveTimer.current = null
+      }
+      activeFlush.current = null
+      profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'error', generation: generation.current }
+      setAssuranceError(error instanceof Error ? error.message : 'Could not verify your sign-in security level.')
+      setAssuranceStatus('error')
+    })
+    return () => {
+      cancelled = true
+      if (assuranceRequest.current === request) assuranceRequest.current += 1
+    }
+  }, [authResolved, assuranceAttempt, user?.id])
+
+  useEffect(() => {
+    if (!authResolved || !user || assuranceStatus !== 'aal2' || inviteSetupRequired || inviteCallbackPending) return
+    const userId = user.id
+    if (profileSnapshot.current.userId === userId && profileSnapshot.current.loadedUserId === userId && profileSnapshot.current.status === 'ready' && profileSnapshot.current.data) return
+    const requestGeneration = ++generation.current
+    savedRevision.current = editRevision.current
+    setData(null)
+    setLoadedUserId(null)
+    setProfileStatus('loading')
+    setProfileError('')
+    void loadProfile(userId, initialAppData).then((profile) => {
+      if (generation.current !== requestGeneration) return
+      savedRevision.current = editRevision.current
+      setData(profile)
+      setLoadedUserId(userId)
+      setProfileStatus('ready')
+      setSaveStatus('saved')
+    }).catch((error: unknown) => {
+      if (generation.current !== requestGeneration) return
+      setProfileError(error instanceof Error ? error.message : 'Could not load your kitchen profile.')
+      setProfileStatus('error')
+    })
+    return () => { generation.current += 1 }
+  }, [authResolved, assuranceStatus, inviteSetupRequired, inviteCallbackPending, user?.id, profileAttempt])
+
+  useEffect(() => {
+    if (assuranceStatus !== 'aal2' || !user || !data || loadedUserId !== user.id || profileStatus !== 'ready' || savedRevision.current === editRevision.current) return
+    const timeout = window.setTimeout(() => {
+      saveTimer.current = null
+      void flushSaveRef.current()
+    }, 500)
+    saveTimer.current = timeout
+    return () => {
+      window.clearTimeout(timeout)
+      if (saveTimer.current === timeout) saveTimer.current = null
+    }
+  }, [assuranceStatus, data, loadedUserId, profileStatus, saveAttempt, user?.id])
+
+  const flushSaveRef = useRef<() => Promise<boolean>>(async () => true)
+  flushSaveRef.current = () => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    if (activeFlush.current) return activeFlush.current
+
+    const flush = (async () => {
+      while (savedRevision.current < editRevision.current) {
+        const snapshot = profileSnapshot.current
+        if (snapshot.assuranceStatus !== 'aal2' || !snapshot.userId || snapshot.loadedUserId !== snapshot.userId || snapshot.status !== 'ready' || !snapshot.data) return false
+        const revision = editRevision.current
+        try {
+          setSaveStatus('saving')
+          await saveProfile(snapshot.userId, snapshot.data)
+          const latest = profileSnapshot.current
+          if (latest.userId !== snapshot.userId || latest.generation !== snapshot.generation) return false
+          savedRevision.current = Math.max(savedRevision.current, revision)
+        } catch (error) {
+          const latest = profileSnapshot.current
+          if (latest.userId === snapshot.userId && latest.generation === snapshot.generation) {
+            setSaveStatus('error')
+            setProfileError(error instanceof Error ? error.message : 'Could not save your changes. They are still available here; try again.')
+          }
+          return false
+        }
+      }
+      setSaveStatus('saved')
+      setProfileError('')
+      return true
+    })()
+    activeFlush.current = flush
+    void flush.then(() => {
+      if (activeFlush.current === flush) activeFlush.current = null
+    }, () => {
+      if (activeFlush.current === flush) activeFlush.current = null
+    })
+    return flush
+  }
+
+  function updateProfileData(update: (current: AppData) => AppData) {
+    const current = profileSnapshot.current.data
+    if (!current || profileSnapshot.current.assuranceStatus !== 'aal2' || signingOutRef.current) return
+    const next = update(current)
+    editRevision.current += 1
+    profileSnapshot.current = { ...profileSnapshot.current, data: next }
+    setData(next)
+    setSaveStatus('saving')
+    setProfileError('')
+  }
+
+  async function signOut() {
+    if (!supabase || signingOutRef.current) return
+    signingOutRef.current = true
+    setSigningOut(true)
+    setAccountError('')
+    try {
+      // MFA screens have no profile data to save. Keep sign-out available while the
+      // session is below AAL2; the normal app still flushes pending edits first.
+      const snapshot = profileSnapshot.current
+      const hasPendingData = savedRevision.current < editRevision.current
+        && snapshot.userId === activeUserId.current
+        && snapshot.loadedUserId === snapshot.userId
+        && snapshot.data !== null
+      if (hasPendingData && snapshot.assuranceStatus !== 'aal2') {
+        setAccountError('Please wait for the session security check to finish, then try signing out again so your pending changes can be saved.')
+        return
+      }
+      const saved = snapshot.assuranceStatus === 'aal2' ? await flushSaveRef.current() : true
+      if (!saved) return
+      const { error } = await supabase.auth.signOut()
+      if (error) setAccountError(`Could not sign out: ${error.message}`)
+    } catch (error) {
+      setAccountError(error instanceof Error ? `Could not sign out: ${error.message}` : 'Could not sign out. Please try again.')
+    } finally {
+      signingOutRef.current = false
+      setSigningOut(false)
+    }
+  }
+
+  function retryAssurance() {
+    assuranceRequest.current += 1
+    generation.current += 1
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    activeFlush.current = null
+    profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'checking', generation: generation.current }
+    setAssuranceError('')
+    setAssuranceStatus('checking')
+    setAssuranceAttempt((attempt) => attempt + 1)
+  }
+
+  function acceptInvitePassword(userId: string) {
+    if (activeUserId.current !== userId || inviteSetupUserIdRef.current !== userId) return
+    clearInviteRedirectMarker()
+    clearPendingInvitePasswordSetup(userId)
+    clearInviteSetup()
+  }
+
+  function handleMfaVerified(verifiedUserId: string) {
+    if (activeUserId.current !== verifiedUserId || !supabase) return
+    const request = ++assuranceRequest.current
+    generation.current += 1
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    activeFlush.current = null
+    profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'checking', generation: generation.current }
+    setAssuranceStatus('checking')
+    setAssuranceError('')
+    void supabase.auth.mfa.getAuthenticatorAssuranceLevel().then(({ data: assurance, error }) => {
+      if (request !== assuranceRequest.current || activeUserId.current !== verifiedUserId) return
+      if (error) throw error
+      if (!hasTotpAal2(assurance)) {
+        resetProfileAccess('aal1')
+        setAssuranceStatus('aal1')
+        return
+      }
+      profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'aal2' }
+      setAssuranceStatus('aal2')
+    }).catch((error: unknown) => {
+      if (request !== assuranceRequest.current || activeUserId.current !== verifiedUserId) return
+      resetProfileAccess('error')
+      setAssuranceError(error instanceof Error ? error.message : 'Could not verify your sign-in security level.')
+      setAssuranceStatus('error')
+    })
+  }
+
+  if (!supabaseConfigured) return <SetupScreen />
+  if (!authResolved) return <StatusScreen title="Checking your account…" />
+  if (!user) return <AuthGate />
+  if (inviteCallbackPending) return <StatusScreen title="Completing your invitation…" />
+  if (inviteSetupRequired) return <InvitePasswordSetup key={user.id} onComplete={() => acceptInvitePassword(user.id)} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
+  if (assuranceStatus !== 'aal2') return <MfaGate key={user.id} userId={user.id} email={user.email ?? ''} assuranceStatus={assuranceStatus} assuranceError={assuranceError} onRetryAssurance={retryAssurance} onAssuranceVerified={handleMfaVerified} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
+  if (profileStatus === 'error') return <StatusScreen title="We couldn’t load your kitchen" message={profileError} onRetry={() => { setProfileStatus('loading'); setProfileError(''); setLoadedUserId(null); setProfileAttempt((attempt) => attempt + 1) }} />
+  if (profileStatus === 'loading' || loadedUserId !== user.id || !data) return <StatusScreen title="Loading your kitchen…" />
+  return <KitchenApp user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
+}
+
+function SetupScreen() {
+  return <StatusScreen title="Connect RecipeList to Supabase" message="For local use, run npx supabase start, copy the local API URL and publishable/anon key from npx supabase status into .env.local, then restart the app. The checked-in migration is applied by the local stack. See README.md for hosted setup." />
+}
+
+function StatusScreen({ title, message, onRetry }: { title: string; message?: string; onRetry?: () => void }) {
+  return <main className="auth-screen"><section className="auth-card status-card"><div className="auth-brand"><span className="brand-mark">✦</span><span>recipe<span className="brand-light">list</span></span></div><h1>{title}</h1>{message && <p className="auth-intro" role={onRetry ? 'alert' : undefined}>{message}</p>}{onRetry && <button className="button button-dark auth-submit" onClick={onRetry}>Try again</button>}</section></main>
+}
+
+function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountError, signingOut, onRetrySave, onSignOut }: { user: User; data: AppData; onDataChange: (update: (current: AppData) => AppData) => void; saveStatus: SaveStatus; saveError: string; accountError: string; signingOut: boolean; onRetrySave: () => void; onSignOut: () => void }) {
   const [section, setSection] = useState<Section>('discover')
   const [query, setQuery] = useState('')
   const [pantryEntry, setPantryEntry] = useState('')
@@ -43,12 +487,39 @@ function App() {
   const [showRecipeForm, setShowRecipeForm] = useState(false)
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
   const [toast, setToast] = useState('')
+  const [role, setRole] = useState<UserRole | null>(null)
+  const [roleUserId, setRoleUserId] = useState<string | null>(null)
+  const [roleError, setRoleError] = useState('')
+  const [sharedRecipes, setSharedRecipes] = useState<Recipe[]>([])
+  const [catalogError, setCatalogError] = useState('')
+  const [catalogAttempt, setCatalogAttempt] = useState(0)
+  const [catalogSaving, setCatalogSaving] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let active = true
+    setRole(null)
+    setRoleUserId(null)
+    setRoleError('')
+    setSharedRecipes([])
+    setCatalogError('')
+    void loadCurrentUserRole(user.id).then((nextRole) => {
+      if (active) { setRole(nextRole); setRoleUserId(user.id) }
+    }).catch((error: unknown) => {
+      if (active) setRoleError(error instanceof Error ? error.message : 'Could not verify your account role.')
+    })
+    void loadSharedRecipes().then((recipes) => {
+      if (active) { setSharedRecipes(recipes); setCatalogError('') }
+    }).catch((error: unknown) => {
+      if (active) setCatalogError(error instanceof Error ? error.message : 'Could not load the shared recipe catalog.')
+    })
+    return () => { active = false }
+  }, [user.id, catalogAttempt])
 
   const closeRecipeForm = useCallback(() => setShowRecipeForm(false), [])
   const closeSelectedRecipe = useCallback(() => setSelectedRecipe(null), [])
 
-  useEffect(() => saveAppData(data), [data])
+  const initials = user.email?.trim().slice(0, 1).toLocaleUpperCase() || 'U'
   useEffect(() => {
     if (!toast) return
     const timeout = window.setTimeout(() => setToast(''), 2800)
@@ -65,7 +536,11 @@ function App() {
     return () => window.removeEventListener('keydown', focusSearch)
   }, [showRecipeForm, selectedRecipe])
 
-  const matches = useMemo(() => matchRecipes(data.recipes, data.pantry), [data.recipes, data.pantry])
+  const recipes = useMemo(() => {
+    const sharedIds = new Set(sharedRecipes.map((recipe) => recipe.id))
+    return [...sharedRecipes, ...data.recipes.filter((recipe) => !sharedIds.has(recipe.id))]
+  }, [data.recipes, sharedRecipes])
+  const matches = useMemo(() => matchRecipes(recipes, data.pantry), [recipes, data.pantry])
   const filteredMatches = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
     return matches.filter(({ recipe, missing }) => {
@@ -79,7 +554,7 @@ function App() {
   const dateLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toLocaleUpperCase()
 
   function updateData(update: (current: AppData) => AppData) {
-    setData((current) => update(current))
+    onDataChange(update)
   }
 
   function addPantryItem(event: FormEvent<HTMLFormElement>) {
@@ -155,6 +630,23 @@ function App() {
     setToast('Recipe added to your library')
   }
 
+  async function saveSharedRecipe(recipe: Recipe) {
+    if (role !== 'admin' || roleUserId !== user.id || roleError || catalogSaving) throw new Error('Admin access could not be verified.')
+    setCatalogSaving(true)
+    try {
+      await insertSharedRecipe(recipe)
+      setSharedRecipes((current) => current.some((item) => item.id === recipe.id) ? current : [recipe, ...current])
+      setShowRecipeForm(false)
+      setToast('Recipe added to the shared catalog')
+      setCatalogError('')
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : 'Could not add the shared recipe. Please try again.')
+      throw error
+    } finally {
+      setCatalogSaving(false)
+    }
+  }
+
   function addRecipeIngredientsToPantry(recipe: Recipe) {
     const known = new Set(data.pantry.map(normalizeName))
     const newItems = recipe.ingredients.map((ingredient) => ingredient.name.trim()).filter((name) => {
@@ -174,7 +666,8 @@ function App() {
   const heading = section === 'discover' ? 'Your kitchen, sorted.' : sectionLabels[section]
 
   return (
-    <div className="app-shell">
+    <>
+    <div className="app-shell" inert={signingOut} aria-busy={signingOut}>
       <aside className="sidebar">
         <a className="brand" href="#discover" onClick={(event) => { event.preventDefault(); setSection('discover') }} aria-label="RecipeList home">
           <span className="brand-mark"><Icon name="leaf" size={22} /></span>
@@ -195,12 +688,12 @@ function App() {
         <div className="pantry-status">
           <div className="status-icon"><Icon name="basket" size={18} /></div>
           <div><strong>Your pantry</strong><span>{data.pantry.length} ingredients tracked</span></div>
-          <span className="status-dot" aria-label="Saved on this device" title="Saved on this device" />
+          <span className={`status-dot ${saveStatus === 'error' ? 'status-error' : ''}`} aria-label={saveStatus === 'saved' ? 'Saved to your profile' : saveStatus === 'saving' ? 'Saving to your profile' : 'Save failed'} title={saveStatus === 'saved' ? 'Saved to your profile' : saveStatus === 'saving' ? 'Saving to your profile' : 'Save failed'} />
         </div>
         <div className="profile-card">
-          <div className="profile-avatar">M</div>
-          <div><strong>My kitchen</strong><span>Personal collection</span></div>
-          <button className="icon-button mini" aria-label="Open kitchen settings" onClick={() => setToast('Your collection is saved on this device')}>···</button>
+          <div className="profile-avatar">{initials}</div>
+          <div><strong>{user.email || 'My kitchen'}</strong><span>{saveStatus === 'saved' ? 'Saved to your profile' : saveStatus === 'saving' ? 'Saving changes…' : 'Save failed'}</span></div>
+          <button className="icon-button mini sign-out" aria-label="Sign out" disabled={signingOut} onClick={onSignOut}>{signingOut ? '…' : '↗'}</button>
         </div>
       </aside>
 
@@ -215,7 +708,7 @@ function App() {
           </label>
           <div className="topbar-actions">
             <button className="button button-primary top-add" onClick={() => setShowRecipeForm(true)}><Icon name="plus" size={17} /><span>Add recipe</span></button>
-            <div className="user-avatar" aria-label="Your profile">M</div>
+            <button className="user-avatar account-button" aria-label={`Sign out ${user.email ?? 'of RecipeList'}`} disabled={signingOut} onClick={onSignOut}>{signingOut ? '…' : initials}</button>
           </div>
         </header>
 
@@ -230,7 +723,7 @@ function App() {
             <div>
               <div className="eyebrow"><span className="eyebrow-dot" /> {dateLabel} <span className="eyebrow-separator">/</span> GOOD FOOD STARTS HERE</div>
               <h1>{heading}</h1>
-              <p>{section === 'discover' ? 'Make something lovely with what you already have.' : pageDescription(section, data)}</p>
+              <p>{section === 'discover' ? 'Make something lovely with what you already have.' : pageDescription(section, recipes.length)}</p>
             </div>
             <div className="heading-note"><span className="note-icon"><Icon name="chef" size={18} /></span><span><strong>A good evening to cook</strong><small>What sounds good tonight?</small></span></div>
           </div>
@@ -238,7 +731,7 @@ function App() {
           {section === 'discover' && <DiscoverView
             matches={matches}
             pantryCount={data.pantry.length}
-            recipeCount={data.recipes.length}
+            recipeCount={recipes.length}
             cookableCount={cookableCount}
             query={query}
             filteredMatches={filteredMatches}
@@ -248,24 +741,30 @@ function App() {
             onShowRecipes={() => setSection('recipes')}
             onShowPantry={() => setSection('pantry')}
           />}
-          {section === 'recipes' && <RecipesView matches={filteredMatches} total={data.recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={setSelectedRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
+          {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={setSelectedRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
           {section === 'pantry' && <PantryView pantry={data.pantry} entry={pantryEntry} onEntryChange={setPantryEntry} onSubmit={addPantryItem} onRemove={removePantryItem} matches={matches} onOpen={setSelectedRecipe} onAddMissing={addMissing} />}
           {section === 'shopping' && <ShoppingView items={data.shopping} entry={shoppingEntry} onEntryChange={setShoppingEntry} onSubmit={addShoppingEntry} onToggle={toggleShoppingItem} onRemove={(id) => updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => item.id !== id) }))} onClearChecked={clearChecked} />}
 
-          <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> Saved locally on this device</span></footer>
+          <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> {saveStatus === 'saved' ? `Saved to ${user.email ?? 'your profile'}` : saveStatus === 'saving' ? 'Saving to your profile…' : 'Could not save to your profile'}</span></footer>
+          {saveStatus === 'error' && <div className="save-error" role="alert">{saveError || 'Your changes could not be saved.'} <button onClick={onRetrySave}>Try saving again</button></div>}
+          {accountError && <div className="save-error" role="alert">{accountError}</div>}
+          {catalogError && <div className="save-error catalog-error" role="alert">Shared catalog unavailable: {catalogError} <button onClick={() => setCatalogAttempt((attempt) => attempt + 1)}>Retry catalog</button></div>}
+          {roleError && <div className="save-error catalog-error" role="status">Account role could not be verified. Shared recipe publishing is disabled.</div>}
         </div>
       </main>
 
-      {showRecipeForm && <RecipeForm onClose={closeRecipeForm} onSave={saveRecipe} />}
+      {showRecipeForm && <RecipeForm onClose={closeRecipeForm} onSave={saveRecipe} onSaveShared={saveSharedRecipe} isAdmin={role === 'admin' && roleUserId === user.id && !roleError} savingShared={catalogSaving} />}
       {selectedRecipe && <RecipeDetails recipe={selectedRecipe} match={matches.find((item) => item.recipe.id === selectedRecipe.id)} onClose={closeSelectedRecipe} onAddMissing={addMissing} onAddIngredients={addRecipeIngredientsToPantry} />}
       {toast && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={16} /></span>{toast}</div>}
       <span className="sr-only" aria-live="polite">{`${shoppingCount} items on shopping list`}</span>
     </div>
+    {signingOut && <div className="signout-overlay" role="status"><span>Saving your kitchen and signing out…</span></div>}
+    </>
   )
 }
 
-function pageDescription(section: Section, data: AppData) {
-  if (section === 'recipes') return `${data.recipes.length} recipes from your favorite meal kits and your own kitchen.`
+function pageDescription(section: Section, recipeCount: number) {
+  if (section === 'recipes') return `${recipeCount} recipes from your favorite meal kits and your own kitchen.`
   if (section === 'pantry') return 'Keep track of what’s on hand and find recipes that fit.'
   if (section === 'shopping') return 'Everything you need to bring your next meal together.'
   return ''
@@ -413,16 +912,17 @@ function ShoppingRow({ item, onToggle, onRemove }: { item: AppData['shopping'][n
   return <li className={`shopping-row ${item.checked ? 'checked' : ''}`}><button className="check-button" onClick={() => onToggle(item.id)} aria-label={item.checked ? `Mark ${item.name} as not picked up` : `Mark ${item.name} as picked up`}><Icon name="check" size={14} /></button><span className="shopping-name">{item.name}</span><button className="remove-shopping" onClick={() => onRemove(item.id)} aria-label={`Remove ${item.name} from list`}><Icon name="trash" size={16} /></button></li>
 }
 
-function RecipeForm({ onClose, onSave }: { onClose: () => void; onSave: (recipe: Recipe) => void }) {
+function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { onClose: () => void; onSave: (recipe: Recipe) => void; onSaveShared: (recipe: Recipe) => Promise<void>; isAdmin: boolean; savingShared: boolean }) {
   const [title, setTitle] = useState('')
   const [source, setSource] = useState('')
   const [category, setCategory] = useState('Dinner')
   const [time, setTime] = useState('30')
   const [servings, setServings] = useState('2')
   const [ingredientsText, setIngredientsText] = useState('')
+  const [destination, setDestination] = useState<'personal' | 'shared'>('personal')
   const [error, setError] = useState('')
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const ingredients: Ingredient[] = ingredientsText.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
       const [name, ...amountParts] = line.split('|')
@@ -430,7 +930,11 @@ function RecipeForm({ onClose, onSave }: { onClose: () => void; onSave: (recipe:
     }).filter((item) => item.name)
     if (!title.trim()) { setError('Give your recipe a name to continue.'); return }
     if (!ingredients.length) { setError('Add at least one ingredient, one per line.'); return }
-    onSave(makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients))
+    const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients)
+    if (destination === 'shared') {
+      try { await onSaveShared(recipe) }
+      catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Could not save to the shared catalog.') }
+    } else onSave(recipe)
   }
 
   return <Modal onClose={onClose} title="Add a recipe" description="Save a favorite from a meal kit or your own kitchen.">
@@ -440,9 +944,10 @@ function RecipeForm({ onClose, onSave }: { onClose: () => void; onSave: (recipe:
       <label className="form-field"><span>Category</span><input value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Dinner" /></label>
       <label className="form-field"><span>Time <small>minutes</small></span><input type="number" min="1" value={time} onChange={(event) => setTime(event.target.value)} /></label>
       <label className="form-field"><span>Servings</span><input type="number" min="1" value={servings} onChange={(event) => setServings(event.target.value)} /></label>
+      {isAdmin && <label className="form-field wide"><span>Save to</span><select value={destination} onChange={(event) => setDestination(event.target.value as 'personal' | 'shared')}><option value="personal">My private recipes</option><option value="shared">Shared RecipeList catalog</option></select><small className="field-hint">Shared recipes are available to every RecipeList user.</small></label>}
       <label className="form-field wide"><span>Ingredients <small>One per line · ingredient | amount</small></span><textarea value={ingredientsText} onChange={(event) => setIngredientsText(event.target.value)} placeholder={'chickpeas | 1 can\nlemon | 1\nplain yogurt | ½ cup'} rows={5} required /></label>
       {error && <div className="form-error" role="alert">{error}</div>}
-      <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit">Save recipe <Icon name="arrow" size={16} /></button></div>
+      <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit" disabled={savingShared}>{savingShared ? 'Saving…' : 'Save recipe'} {!savingShared && <Icon name="arrow" size={16} />}</button></div>
     </form>
   </Modal>
 }
