@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { User } from '@supabase/supabase-js'
-import AuthGate, { InvitePasswordSetup } from './AuthGate'
+import AuthGate from './AuthGate'
+import { apiRequest, errorMessage } from './api'
+import { authClient, type AuthUser } from './authClient'
 import { createId, makeRecipe, matchRecipes, normalizeName } from './lib'
 import MfaGate from './MfaGate'
 import { loadProfile, saveProfile } from './profileStorage'
-import { hasTotpAal2, inviteRedirectDetected, supabase, supabaseConfigured } from './supabase'
-import { initialAppData } from './data'
 import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from './recipeStorage'
 import type { AppData, Ingredient, Recipe, RecipeMatch, UserRole } from './types'
 
@@ -42,55 +41,17 @@ function Icon({ name, size = 20 }: { name: 'sparkle' | 'book' | 'basket' | 'bag'
 
 type ProfileStatus = 'loading' | 'ready' | 'error'
 type SaveStatus = 'saved' | 'saving' | 'error'
-type AssuranceStatus = 'checking' | 'aal1' | 'aal2' | 'error'
-// This key stores only the invite password-step flag, never profile or kitchen data.
-const INVITE_PASSWORD_SETUP_KEY = 'recipelist.invite-password-setup.'
-
-function hasPendingInvitePasswordSetup(userId: string): boolean {
-  try {
-    return window.localStorage.getItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`) === 'pending'
-  } catch {
-    return false
-  }
-}
-
-function markInvitePasswordSetupPending(userId: string): void {
-  try {
-    window.localStorage.setItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`, 'pending')
-  } catch {
-    // The in-memory gate still protects the active invitation flow.
-  }
-}
-
-function clearPendingInvitePasswordSetup(userId: string): void {
-  try {
-    window.localStorage.removeItem(`${INVITE_PASSWORD_SETUP_KEY}${userId}`)
-  } catch {
-    // The in-memory gate still protects the active invitation flow.
-  }
-}
-
-function clearInviteRedirectMarker() {
-  const url = new URL(window.location.href)
-  if (url.searchParams.get('type') === 'invite') url.searchParams.delete('type')
-  if (url.hash) {
-    const hash = new URLSearchParams(url.hash.slice(1))
-    if (hash.get('type') === 'invite') {
-      hash.delete('type')
-      url.hash = hash.toString()
-    }
-  }
-  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
-}
+type SecurityStatus = 'checking' | 'setup' | 'verified' | 'error'
+type CurrentUser = { user: AuthUser & { twoFactorEnabled: boolean }; role: UserRole; needsMfaReauthentication: boolean }
 
 function App() {
-  const [authResolved, setAuthResolved] = useState(false)
-  const [user, setUser] = useState<User | null>(null)
-  const [assuranceStatus, setAssuranceStatus] = useState<AssuranceStatus>('checking')
-  const [assuranceError, setAssuranceError] = useState('')
-  const [assuranceAttempt, setAssuranceAttempt] = useState(0)
-  const [inviteSetupUserId, setInviteSetupUserId] = useState<string | null>(null)
-  const [inviteCallbackPending, setInviteCallbackPending] = useState(inviteRedirectDetected)
+  const { data: session, isPending: sessionPending } = authClient.useSession()
+  const user = session?.user ? session.user as AuthUser : null
+  const [me, setMe] = useState<CurrentUser | null>(null)
+  const [securityStatus, setSecurityStatus] = useState<SecurityStatus>('checking')
+  const [securityError, setSecurityError] = useState('')
+  const [securityAttempt, setSecurityAttempt] = useState(0)
+  const [reauthMessage, setReauthMessage] = useState('')
   const [data, setData] = useState<AppData | null>(null)
   const [loadedUserId, setLoadedUserId] = useState<string | null>(null)
   const [profileStatus, setProfileStatus] = useState<ProfileStatus>('loading')
@@ -101,221 +62,97 @@ function App() {
   const [accountError, setAccountError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
   const generation = useRef(0)
-  const assuranceRequest = useRef(0)
-  const inviteSetupUserIdRef = useRef<string | null>(null)
-  const inviteRedirectPending = useRef(inviteRedirectDetected)
+  const securityRequest = useRef(0)
   const editRevision = useRef(0)
   const savedRevision = useRef(0)
   const activeUserId = useRef<string | null>(null)
   const saveTimer = useRef<number | null>(null)
   const activeFlush = useRef<Promise<boolean> | null>(null)
   const signingOutRef = useRef(false)
-  const profileSnapshot = useRef<{ userId: string | null; data: AppData | null; loadedUserId: string | null; status: ProfileStatus; assuranceStatus: AssuranceStatus; generation: number }>({ userId: null, data: null, loadedUserId: null, status: 'loading', assuranceStatus, generation: 0 })
-  profileSnapshot.current = { userId: user?.id ?? null, data, loadedUserId, status: profileStatus, assuranceStatus, generation: generation.current }
-  const inviteSetupRequired = Boolean(user && inviteSetupUserId === user.id)
+  const handledReauthUser = useRef<string | null>(null)
+  const profileSnapshot = useRef<{ userId: string | null; data: AppData | null; loadedUserId: string | null; status: ProfileStatus; securityStatus: SecurityStatus; generation: number }>({ userId: null, data: null, loadedUserId: null, status: 'loading', securityStatus: 'checking', generation: 0 })
+  profileSnapshot.current = { userId: user?.id ?? null, data, loadedUserId, status: profileStatus, securityStatus, generation: generation.current }
 
-  function captureInviteCallbackUser(event: string | null, userId: string | null) {
-    if (event === 'SIGNED_IN' && inviteRedirectPending.current && userId) {
-      markInvitePasswordSetupPending(userId)
-      inviteSetupUserIdRef.current = userId
-      setInviteSetupUserId(userId)
-      inviteRedirectPending.current = false
-      setInviteCallbackPending(false)
-    }
-  }
-
-  function expireUnclaimedInviteRedirect() {
-    window.setTimeout(() => {
-      if (!inviteRedirectPending.current) return
-      inviteRedirectPending.current = false
-      setInviteCallbackPending(false)
-      clearInviteRedirectMarker()
-    }, 0)
-  }
-
-  function clearInviteSetup() {
-    inviteSetupUserIdRef.current = null
-    setInviteSetupUserId(null)
-  }
-
-  function restoreInviteSetupForUser(userId: string | null) {
-    if (userId && hasPendingInvitePasswordSetup(userId)) {
-      inviteSetupUserIdRef.current = userId
-      setInviteSetupUserId(userId)
-    } else if (inviteSetupUserIdRef.current && inviteSetupUserIdRef.current !== userId) {
-      clearInviteSetup()
-    }
-  }
-
-  function resetProfileAccess(nextAssurance: 'aal1' | 'error') {
+  useEffect(() => {
+    const nextUserId = user?.id ?? null
+    if (activeUserId.current === nextUserId) return
+    activeUserId.current = nextUserId
+    handledReauthUser.current = null
     generation.current += 1
-    if (saveTimer.current !== null) {
-      window.clearTimeout(saveTimer.current)
-      saveTimer.current = null
-    }
+    securityRequest.current += 1
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    saveTimer.current = null
     activeFlush.current = null
-    profileSnapshot.current = {
-      ...profileSnapshot.current,
-      data: null,
-      loadedUserId: null,
-      status: 'loading',
-      assuranceStatus: nextAssurance,
-      generation: generation.current,
-    }
+    savedRevision.current = editRevision.current
+    setMe(null)
     setData(null)
     setLoadedUserId(null)
     setProfileStatus('loading')
     setProfileError('')
     setSaveStatus('saved')
-  }
+    setAccountError('')
+    setSecurityError('')
+    setSecurityStatus(nextUserId ? 'checking' : 'setup')
+    profileSnapshot.current = { userId: nextUserId, data: null, loadedUserId: null, status: 'loading', securityStatus: nextUserId ? 'checking' : 'setup', generation: generation.current }
+  }, [user?.id])
 
   useEffect(() => {
-    if (!supabase) return
-    let eventReceived = false
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      // Keep this callback synchronous. Assurance and profile checks happen in effects below.
-      eventReceived = true
-      const nextUser = session?.user ?? null
-      const nextUserId = nextUser?.id ?? null
-      captureInviteCallbackUser(event, nextUserId)
-      restoreInviteSetupForUser(nextUserId)
-      if (event === 'INITIAL_SESSION' && inviteRedirectPending.current) expireUnclaimedInviteRedirect()
-      const userChanged = activeUserId.current !== nextUserId
-      assuranceRequest.current += 1
-      generation.current += 1
-      if (saveTimer.current !== null) {
-        window.clearTimeout(saveTimer.current)
-        saveTimer.current = null
+    if (!user) return
+    let active = true
+    const request = ++securityRequest.current
+    setSecurityStatus('checking')
+    void apiRequest<CurrentUser>('/api/me').then(async (current) => {
+      if (!active || request !== securityRequest.current || activeUserId.current !== user.id) return
+      if (!current || current.user?.id !== user.id || (current.role !== 'member' && current.role !== 'admin')) {
+        throw new Error('Your account or role could not be verified.')
       }
-      // Detach the prior promise. An already-issued update cannot be cancelled,
-      // but the generation guard ignores its result and a later retry can queue.
-      activeFlush.current = null
-      if (userChanged) {
-        activeUserId.current = nextUserId
-        savedRevision.current = editRevision.current
-        setData(null)
-        setLoadedUserId(null)
-        setProfileStatus('loading')
-        setProfileError('')
-        setSaveStatus('saved')
-        setAccountError('')
-      }
-      const nextAssurance: AssuranceStatus = nextUser ? 'checking' : 'aal1'
-      profileSnapshot.current = {
-        ...profileSnapshot.current,
-        userId: nextUserId,
-        data: userChanged ? null : profileSnapshot.current.data,
-        loadedUserId: userChanged ? null : profileSnapshot.current.loadedUserId,
-        status: userChanged ? 'loading' : profileSnapshot.current.status,
-        assuranceStatus: nextAssurance,
-        generation: generation.current,
-      }
-      setAssuranceStatus(nextAssurance)
-      setAssuranceError('')
-      if (nextUser) setAssuranceAttempt((attempt) => attempt + 1)
-      setUser(nextUser)
-      setAuthResolved(true)
-    })
-    void supabase.auth.getSession().then(({ data: { session }, error }) => {
-      if (eventReceived) return
-      if (error) setProfileError(error.message)
-      const nextUser = session?.user ?? null
-      restoreInviteSetupForUser(nextUser?.id ?? null)
-      if (inviteRedirectPending.current) expireUnclaimedInviteRedirect()
-      activeUserId.current = nextUser?.id ?? null
-      setUser(nextUser)
-      setAuthResolved(true)
-    }).catch((error: unknown) => {
-      if (eventReceived) return
-      if (inviteRedirectPending.current) expireUnclaimedInviteRedirect()
-      setProfileError(error instanceof Error ? error.message : 'Could not check your sign-in session.')
-      activeUserId.current = null
-      setAuthResolved(true)
-    })
-    return () => subscription.unsubscribe()
-  }, [])
-
-  useEffect(() => {
-    if (!authResolved || !user || !supabase) return
-    let cancelled = false
-    const request = ++assuranceRequest.current
-    setAssuranceStatus('checking')
-    void supabase.auth.mfa.getAuthenticatorAssuranceLevel().then(({ data: assurance, error }) => {
-      if (cancelled || request !== assuranceRequest.current) return
-      if (error) throw error
-      if (hasTotpAal2(assurance)) {
-        setAssuranceError('')
-        profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'aal2' }
-        setAssuranceStatus('aal2')
+      setMe(current)
+      if (current.needsMfaReauthentication) {
+        setReauthMessage('Authenticator setup is complete. Sign in again and verify your authenticator before opening your kitchen.')
+        if (handledReauthUser.current !== user.id) {
+          handledReauthUser.current = user.id
+          const result = await authClient.signOut()
+          if (result.error) throw result.error
+        }
         return
       }
-
-      generation.current += 1
-      if (saveTimer.current !== null) {
-        window.clearTimeout(saveTimer.current)
-        saveTimer.current = null
-      }
-      activeFlush.current = null
-      profileSnapshot.current = {
-        ...profileSnapshot.current,
-        data: null,
-        loadedUserId: null,
-        status: 'loading',
-        assuranceStatus: 'aal1',
-        generation: generation.current,
-      }
-      setData(null)
-      setLoadedUserId(null)
-      setProfileStatus('loading')
-      setProfileError('')
-      setSaveStatus('saved')
-      setAssuranceError('')
-      setAssuranceStatus('aal1')
+      setReauthMessage('')
+      setSecurityStatus(current.user.twoFactorEnabled ? 'verified' : 'setup')
+      setSecurityError('')
     }).catch((error: unknown) => {
-      if (cancelled || request !== assuranceRequest.current) return
-      generation.current += 1
-      if (saveTimer.current !== null) {
-        window.clearTimeout(saveTimer.current)
-        saveTimer.current = null
-      }
-      activeFlush.current = null
-      profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'error', generation: generation.current }
-      setAssuranceError(error instanceof Error ? error.message : 'Could not verify your sign-in security level.')
-      setAssuranceStatus('error')
+      if (!active || request !== securityRequest.current) return
+      setSecurityError(errorMessage(error, 'Could not verify your account and security setup.'))
+      setSecurityStatus('error')
     })
-    return () => {
-      cancelled = true
-      if (assuranceRequest.current === request) assuranceRequest.current += 1
-    }
-  }, [authResolved, assuranceAttempt, user?.id])
+    return () => { active = false }
+  }, [user?.id, securityAttempt])
 
   useEffect(() => {
-    if (!authResolved || !user || assuranceStatus !== 'aal2' || inviteSetupRequired || inviteCallbackPending) return
-    const userId = user.id
-    if (profileSnapshot.current.userId === userId && profileSnapshot.current.loadedUserId === userId && profileSnapshot.current.status === 'ready' && profileSnapshot.current.data) return
+    if (!user || securityStatus !== 'verified') return
+    if (profileSnapshot.current.userId === user.id && profileSnapshot.current.loadedUserId === user.id && profileSnapshot.current.status === 'ready' && profileSnapshot.current.data) return
     const requestGeneration = ++generation.current
     savedRevision.current = editRevision.current
     setData(null)
     setLoadedUserId(null)
     setProfileStatus('loading')
     setProfileError('')
-    void loadProfile(userId, initialAppData).then((profile) => {
-      if (generation.current !== requestGeneration) return
+    void loadProfile().then((profile) => {
+      if (generation.current !== requestGeneration || activeUserId.current !== user.id) return
       savedRevision.current = editRevision.current
       setData(profile)
-      setLoadedUserId(userId)
+      setLoadedUserId(user.id)
       setProfileStatus('ready')
       setSaveStatus('saved')
     }).catch((error: unknown) => {
       if (generation.current !== requestGeneration) return
-      setProfileError(error instanceof Error ? error.message : 'Could not load your kitchen profile.')
+      setProfileError(errorMessage(error, 'Could not load your kitchen profile.'))
       setProfileStatus('error')
     })
     return () => { generation.current += 1 }
-  }, [authResolved, assuranceStatus, inviteSetupRequired, inviteCallbackPending, user?.id, profileAttempt])
+  }, [securityStatus, user?.id, profileAttempt])
 
   useEffect(() => {
-    if (assuranceStatus !== 'aal2' || !user || !data || loadedUserId !== user.id || profileStatus !== 'ready' || savedRevision.current === editRevision.current) return
+    if (securityStatus !== 'verified' || !user || !data || loadedUserId !== user.id || profileStatus !== 'ready' || savedRevision.current === editRevision.current) return
     const timeout = window.setTimeout(() => {
       saveTimer.current = null
       void flushSaveRef.current()
@@ -325,7 +162,7 @@ function App() {
       window.clearTimeout(timeout)
       if (saveTimer.current === timeout) saveTimer.current = null
     }
-  }, [assuranceStatus, data, loadedUserId, profileStatus, saveAttempt, user?.id])
+  }, [securityStatus, data, loadedUserId, profileStatus, saveAttempt, user?.id])
 
   const flushSaveRef = useRef<() => Promise<boolean>>(async () => true)
   flushSaveRef.current = () => {
@@ -334,15 +171,14 @@ function App() {
       saveTimer.current = null
     }
     if (activeFlush.current) return activeFlush.current
-
     const flush = (async () => {
       while (savedRevision.current < editRevision.current) {
         const snapshot = profileSnapshot.current
-        if (snapshot.assuranceStatus !== 'aal2' || !snapshot.userId || snapshot.loadedUserId !== snapshot.userId || snapshot.status !== 'ready' || !snapshot.data) return false
+        if (snapshot.securityStatus !== 'verified' || !snapshot.userId || snapshot.loadedUserId !== snapshot.userId || snapshot.status !== 'ready' || !snapshot.data) return false
         const revision = editRevision.current
         try {
           setSaveStatus('saving')
-          await saveProfile(snapshot.userId, snapshot.data)
+          await saveProfile(snapshot.data)
           const latest = profileSnapshot.current
           if (latest.userId !== snapshot.userId || latest.generation !== snapshot.generation) return false
           savedRevision.current = Math.max(savedRevision.current, revision)
@@ -350,7 +186,7 @@ function App() {
           const latest = profileSnapshot.current
           if (latest.userId === snapshot.userId && latest.generation === snapshot.generation) {
             setSaveStatus('error')
-            setProfileError(error instanceof Error ? error.message : 'Could not save your changes. They are still available here; try again.')
+            setProfileError(errorMessage(error, 'Could not save your changes. They are still available here; try again.'))
           }
           return false
         }
@@ -370,7 +206,7 @@ function App() {
 
   function updateProfileData(update: (current: AppData) => AppData) {
     const current = profileSnapshot.current.data
-    if (!current || profileSnapshot.current.assuranceStatus !== 'aal2' || signingOutRef.current) return
+    if (!current || profileSnapshot.current.securityStatus !== 'verified' || signingOutRef.current) return
     const next = update(current)
     editRevision.current += 1
     profileSnapshot.current = { ...profileSnapshot.current, data: next }
@@ -380,105 +216,55 @@ function App() {
   }
 
   async function signOut() {
-    if (!supabase || signingOutRef.current) return
+    if (signingOutRef.current) return
     signingOutRef.current = true
     setSigningOut(true)
     setAccountError('')
     try {
-      // MFA screens have no profile data to save. Keep sign-out available while the
-      // session is below AAL2; the normal app still flushes pending edits first.
       const snapshot = profileSnapshot.current
       const hasPendingData = savedRevision.current < editRevision.current
         && snapshot.userId === activeUserId.current
         && snapshot.loadedUserId === snapshot.userId
         && snapshot.data !== null
-      if (hasPendingData && snapshot.assuranceStatus !== 'aal2') {
+      if (hasPendingData && snapshot.securityStatus !== 'verified') {
         setAccountError('Please wait for the session security check to finish, then try signing out again so your pending changes can be saved.')
         return
       }
-      const saved = snapshot.assuranceStatus === 'aal2' ? await flushSaveRef.current() : true
+      const saved = snapshot.securityStatus === 'verified' ? await flushSaveRef.current() : true
       if (!saved) return
-      const { error } = await supabase.auth.signOut()
-      if (error) setAccountError(`Could not sign out: ${error.message}`)
+      const result = await authClient.signOut()
+      if (result.error) throw result.error
     } catch (error) {
-      setAccountError(error instanceof Error ? `Could not sign out: ${error.message}` : 'Could not sign out. Please try again.')
+      setAccountError(`Could not sign out: ${errorMessage(error, 'Please try again.')}`)
     } finally {
       signingOutRef.current = false
       setSigningOut(false)
     }
   }
 
-  function retryAssurance() {
-    assuranceRequest.current += 1
-    generation.current += 1
-    if (saveTimer.current !== null) {
-      window.clearTimeout(saveTimer.current)
-      saveTimer.current = null
-    }
-    activeFlush.current = null
-    profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'checking', generation: generation.current }
-    setAssuranceError('')
-    setAssuranceStatus('checking')
-    setAssuranceAttempt((attempt) => attempt + 1)
+  function retrySecurity() {
+    securityRequest.current += 1
+    handledReauthUser.current = null
+    setSecurityError('')
+    setSecurityStatus('checking')
+    setSecurityAttempt((attempt) => attempt + 1)
   }
 
-  function acceptInvitePassword(userId: string) {
-    if (activeUserId.current !== userId || inviteSetupUserIdRef.current !== userId) return
-    clearInviteRedirectMarker()
-    clearPendingInvitePasswordSetup(userId)
-    clearInviteSetup()
-  }
-
-  function handleMfaVerified(verifiedUserId: string) {
-    if (activeUserId.current !== verifiedUserId || !supabase) return
-    const request = ++assuranceRequest.current
-    generation.current += 1
-    if (saveTimer.current !== null) {
-      window.clearTimeout(saveTimer.current)
-      saveTimer.current = null
-    }
-    activeFlush.current = null
-    profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'checking', generation: generation.current }
-    setAssuranceStatus('checking')
-    setAssuranceError('')
-    void supabase.auth.mfa.getAuthenticatorAssuranceLevel().then(({ data: assurance, error }) => {
-      if (request !== assuranceRequest.current || activeUserId.current !== verifiedUserId) return
-      if (error) throw error
-      if (!hasTotpAal2(assurance)) {
-        resetProfileAccess('aal1')
-        setAssuranceStatus('aal1')
-        return
-      }
-      profileSnapshot.current = { ...profileSnapshot.current, assuranceStatus: 'aal2' }
-      setAssuranceStatus('aal2')
-    }).catch((error: unknown) => {
-      if (request !== assuranceRequest.current || activeUserId.current !== verifiedUserId) return
-      resetProfileAccess('error')
-      setAssuranceError(error instanceof Error ? error.message : 'Could not verify your sign-in security level.')
-      setAssuranceStatus('error')
-    })
-  }
-
-  if (!supabaseConfigured) return <SetupScreen />
-  if (!authResolved) return <StatusScreen title="Checking your account…" />
-  if (!user) return <AuthGate />
-  if (inviteCallbackPending) return <StatusScreen title="Completing your invitation…" />
-  if (inviteSetupRequired) return <InvitePasswordSetup key={user.id} onComplete={() => acceptInvitePassword(user.id)} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
-  if (assuranceStatus !== 'aal2') return <MfaGate key={user.id} userId={user.id} email={user.email ?? ''} assuranceStatus={assuranceStatus} assuranceError={assuranceError} onRetryAssurance={retryAssurance} onAssuranceVerified={handleMfaVerified} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
+  if (sessionPending) return <StatusScreen title="Checking your account…" />
+  if (!user) return <AuthGate notice={reauthMessage} />
+  if (!me && securityStatus === 'checking') return <StatusScreen title="Checking your account…" />
+  if (securityStatus === 'error') return <StatusScreen title="We couldn’t confirm your account." message={securityError} onRetry={retrySecurity} />
+  if (securityStatus === 'setup') return <MfaGate key={user.id} userId={user.id} email={user.email} onSetupComplete={() => window.location.reload()} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
   if (profileStatus === 'error') return <StatusScreen title="We couldn’t load your kitchen" message={profileError} onRetry={() => { setProfileStatus('loading'); setProfileError(''); setLoadedUserId(null); setProfileAttempt((attempt) => attempt + 1) }} />
   if (profileStatus === 'loading' || loadedUserId !== user.id || !data) return <StatusScreen title="Loading your kitchen…" />
   return <KitchenApp user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
-}
-
-function SetupScreen() {
-  return <StatusScreen title="Connect RecipeList to Supabase" message="For local use, run npx supabase start, copy the local API URL and publishable/anon key from npx supabase status into .env.local, then restart the app. The checked-in migration is applied by the local stack. See README.md for hosted setup." />
 }
 
 function StatusScreen({ title, message, onRetry }: { title: string; message?: string; onRetry?: () => void }) {
   return <main className="auth-screen"><section className="auth-card status-card"><div className="auth-brand"><span className="brand-mark">✦</span><span>recipe<span className="brand-light">list</span></span></div><h1>{title}</h1>{message && <p className="auth-intro" role={onRetry ? 'alert' : undefined}>{message}</p>}{onRetry && <button className="button button-dark auth-submit" onClick={onRetry}>Try again</button>}</section></main>
 }
 
-function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountError, signingOut, onRetrySave, onSignOut }: { user: User; data: AppData; onDataChange: (update: (current: AppData) => AppData) => void; saveStatus: SaveStatus; saveError: string; accountError: string; signingOut: boolean; onRetrySave: () => void; onSignOut: () => void }) {
+function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountError, signingOut, onRetrySave, onSignOut }: { user: AuthUser; data: AppData; onDataChange: (update: (current: AppData) => AppData) => void; saveStatus: SaveStatus; saveError: string; accountError: string; signingOut: boolean; onRetrySave: () => void; onSignOut: () => void }) {
   const [section, setSection] = useState<Section>('discover')
   const [query, setQuery] = useState('')
   const [pantryEntry, setPantryEntry] = useState('')
@@ -503,7 +289,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     setRoleError('')
     setSharedRecipes([])
     setCatalogError('')
-    void loadCurrentUserRole(user.id).then((nextRole) => {
+    void loadCurrentUserRole().then((nextRole) => {
       if (active) { setRole(nextRole); setRoleUserId(user.id) }
     }).catch((error: unknown) => {
       if (active) setRoleError(error instanceof Error ? error.message : 'Could not verify your account role.')

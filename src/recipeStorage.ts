@@ -1,38 +1,31 @@
+import { apiRequest } from './api'
 import type { Recipe, UserRole } from './types'
-import { supabase } from './supabase'
 
-type RecipeRow = Recipe
+type CurrentUser = { user: { id: string; email: string; twoFactorEnabled: boolean }; role: UserRole; needsMfaReauthentication: boolean }
 
-function client() {
-  if (!supabase) throw new Error('Supabase is not configured.')
-  return supabase
+function isRecipe(value: unknown): value is Recipe {
+  if (!value || typeof value !== 'object') return false
+  const recipe = value as Partial<Recipe>
+  return typeof recipe.id === 'string' && typeof recipe.title === 'string'
+    && typeof recipe.source === 'string' && typeof recipe.category === 'string'
+    && typeof recipe.time === 'number' && typeof recipe.servings === 'number'
+    && typeof recipe.image === 'string' && typeof recipe.description === 'string'
+    && Array.isArray(recipe.ingredients) && recipe.ingredients.every((item) => item
+      && typeof item.name === 'string' && typeof item.amount === 'string')
 }
 
-export async function loadCurrentUserRole(userId: string): Promise<UserRole> {
-  const { data, error } = await client().from('user_roles').select('role').eq('user_id', userId).maybeSingle()
-  if (error) throw error
-  if (!data || (data.role !== 'member' && data.role !== 'admin')) throw new Error('Your account role could not be verified.')
-  return data.role
+export async function loadCurrentUserRole(): Promise<UserRole> {
+  const current = await apiRequest<CurrentUser>('/api/me')
+  if (current.role !== 'member' && current.role !== 'admin') throw new Error('Your account role could not be verified.')
+  return current.role
 }
 
 export async function loadSharedRecipes(): Promise<Recipe[]> {
-  const { data, error } = await client().from('recipes')
-    .select('id,title,source,category,time,servings,image,description,ingredients')
-    .order('title')
-  if (error) throw error
-  return (data ?? []).map((row) => {
-    if (!row || typeof row.id !== 'string' || typeof row.title !== 'string' || typeof row.source !== 'string'
-      || typeof row.category !== 'string' || typeof row.time !== 'number' || typeof row.servings !== 'number'
-      || typeof row.image !== 'string' || typeof row.description !== 'string' || !Array.isArray(row.ingredients)
-      || !row.ingredients.every((item: unknown) => item && typeof item === 'object'
-        && typeof (item as { name?: unknown }).name === 'string' && typeof (item as { amount?: unknown }).amount === 'string')) {
-      throw new Error('The shared recipe catalog contains an invalid recipe.')
-    }
-    return row as RecipeRow
-  })
+  const recipes = await apiRequest<unknown>('/api/recipes')
+  if (!Array.isArray(recipes) || !recipes.every(isRecipe)) throw new Error('The shared recipe catalog contains an invalid recipe.')
+  return recipes
 }
 
 export async function insertSharedRecipe(recipe: Recipe): Promise<void> {
-  const { error } = await client().from('recipes').insert(recipe)
-  if (error) throw error
+  await apiRequest<void>('/api/recipes', { method: 'POST', body: JSON.stringify(recipe) })
 }

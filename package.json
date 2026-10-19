@@ -4,20 +4,32 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite\"",
+    "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
+    "start": "node dist-server/server/index.js",
+    "db:migrate": "tsx server/migrate.ts",
+    "admin:promote": "node dist-server/server/promote-admin.js",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.118.0",
+    "better-auth": "^1.7.11",
+    "dotenv": "^16.6.1",
+    "express": "^5.3.0",
+    "kysely": "^0.28.18",
+    "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/pg": "^8.23.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",
-    "supabase": "^2.121.0",
+    "concurrently": "^9.2.5",
+    "tsx": "^4.23.15",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"
   }
