@@ -3,17 +3,7 @@ import { APIError, betterAuth, type BetterAuthOptions, type BetterAuthPlugin } f
 import { twoFactor } from 'better-auth/plugins'
 import { PostgresDialect } from 'kysely'
 import { pool } from './db.js'
-
-const factorVerificationPaths = new Set([
-  '/two-factor/verify-totp',
-  '/two-factor/verify-backup-code',
-  '/two-factor/verify-otp',
-])
-const passwordCreationPaths = new Set(['/sign-up/email', '/change-password', '/reset-password'])
-
-function isFactorVerificationPath(path: string | undefined): path is string {
-  return path !== undefined && factorVerificationPaths.has(path)
-}
+import { isFactorVerificationPath, isPasswordCreationPath, meetsPasswordPolicy, passwordFromRequest, requestsTrustedDevice } from './auth-policy.js'
 
 async function recordMfaAssurance(sessionId: string, userId: string) {
   await pool.query(
@@ -40,28 +30,19 @@ const mfaAssurancePlugin: BetterAuthPlugin = {
   hooks: {
     before: [{
       matcher: (context: { path?: string }) => isFactorVerificationPath(context.path)
-        || (context.path !== undefined && passwordCreationPaths.has(context.path)),
+        || isPasswordCreationPath(context.path),
       handler: async (context: { path?: string; body?: unknown }) => {
-        if (passwordCreationPaths.has(context.path ?? '')
+        if (isPasswordCreationPath(context.path)
           && typeof context.body === 'object'
           && context.body !== null) {
-          const body = context.body as Record<string, unknown>
-          const password = context.path === '/sign-up/email' ? body.password : body.newPassword
-          if (typeof password !== 'string'
-            || password.length < 12
-            || password.length > 128
-            || !/^(?=.*\p{Ll})(?=.*\p{Lu})(?=.*\p{N})(?=.*[^\p{L}\p{N}]).{12,128}$/u.test(password)) {
+          if (!meetsPasswordPolicy(passwordFromRequest(context.path, context.body))) {
             throw APIError.from('BAD_REQUEST', {
               code: 'PASSWORD_POLICY_NOT_MET',
               message: 'Use 12 to 128 characters with a lowercase letter, an uppercase letter, a number, and a symbol.',
             })
           }
         }
-        if (isFactorVerificationPath(context.path)
-          && typeof context.body === 'object'
-          && context.body !== null
-          && 'trustDevice' in context.body
-          && context.body.trustDevice === true) {
+        if (requestsTrustedDevice(context.path, context.body)) {
           throw APIError.from('BAD_REQUEST', {
             code: 'TRUSTED_DEVICE_DISABLED',
             message: 'Remembering this device is disabled. Verify your authenticator every time.',

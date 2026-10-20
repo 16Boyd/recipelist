@@ -1,0 +1,48 @@
+import { describe, expect, it } from 'vitest'
+import { validateAppData, validateRecipe, type RecipeInput } from '../../server/validation.js'
+
+const recipe: RecipeInput = {
+  id: 'recipe-1', title: 'Chicken soup', source: 'Kitchen', category: 'Dinner', time: 30, servings: 4,
+  image: '', description: '', ingredients: [{ name: 'Chicken breast', amount: '1 lb' }],
+}
+
+describe('server data validation', () => {
+  it('accepts a valid recipe and validates the nested ingredient shape', () => {
+    expect(validateRecipe(recipe)).toBe(true)
+    expect(validateRecipe({ ...recipe, ingredients: [{ name: 'Chicken', amount: '' }] })).toBe(true)
+    expect(validateRecipe({ ...recipe, ingredients: [{ name: ' ', amount: '1 lb' }] })).toBe(false)
+    expect(validateRecipe({ ...recipe, ingredients: [null] })).toBe(false)
+  })
+
+  it('enforces recipe boundary values and text limits', () => {
+    expect(validateRecipe({ ...recipe, time: 1, servings: 1, ingredients: [] })).toBe(true)
+    expect(validateRecipe({ ...recipe, time: 1440, servings: 100 })).toBe(true)
+    expect(validateRecipe({ ...recipe, time: 0 })).toBe(false)
+    expect(validateRecipe({ ...recipe, time: 1441 })).toBe(false)
+    expect(validateRecipe({ ...recipe, servings: 0 })).toBe(false)
+    expect(validateRecipe({ ...recipe, servings: 101 })).toBe(false)
+    expect(validateRecipe({ ...recipe, id: '' })).toBe(false)
+    expect(validateRecipe({ ...recipe, title: ' '.repeat(2) })).toBe(false)
+    expect(validateRecipe({ ...recipe, title: 'x'.repeat(161) })).toBe(false)
+    expect(validateRecipe({ ...recipe, ingredients: Array.from({ length: 201 }, () => ({ name: 'x', amount: '1' })) })).toBe(false)
+    expect(validateRecipe({ ...recipe, ingredients: Array.from({ length: 200 }, () => ({ name: 'x', amount: '1' })) })).toBe(true)
+  })
+
+  it('accepts valid app data and rejects malformed collections and nested values', () => {
+    const appData = { recipes: [recipe], pantry: ['salt'], shopping: [{ id: 's1', name: 'pepper', checked: false }] }
+    expect(validateAppData(appData)).toBe(true)
+    expect(validateAppData({ ...appData, recipes: [null] })).toBe(false)
+    expect(validateAppData({ ...appData, pantry: ['  '] })).toBe(false)
+    expect(validateAppData({ ...appData, shopping: [{ id: 's1', name: 'pepper', checked: 'false' }] })).toBe(false)
+    expect(validateAppData({ recipes: [], pantry: [], shopping: [] })).toBe(true)
+    expect(validateAppData(null)).toBe(false)
+  })
+
+  it('enforces collection size and item text boundaries', () => {
+    expect(validateAppData({ recipes: [], pantry: ['x'.repeat(160)], shopping: [] })).toBe(true)
+    expect(validateAppData({ recipes: [], pantry: ['x'.repeat(161)], shopping: [] })).toBe(false)
+    expect(validateAppData({ recipes: [], pantry: Array(2001).fill('x'), shopping: [] })).toBe(false)
+    expect(validateAppData({ recipes: [], pantry: [], shopping: Array.from({ length: 2000 }, (_, i) => ({ id: String(i), name: 'x', checked: true })) })).toBe(true)
+    expect(validateAppData({ recipes: [], pantry: [], shopping: Array(2001).fill({ id: 'x', name: 'x', checked: true }) })).toBe(false)
+  })
+})

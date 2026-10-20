@@ -79,6 +79,12 @@ npm run dev
 
 Open `http://localhost:5173`. The Vite development server proxies API requests to the local Express server. For this workflow, `DATABASE_URL` in `.env` must point to the database on `localhost:5432`, as in `.env.example`. To build the production app, use `npm run build`.
 
+## Tests
+
+Run the repository test suite with `npm test`. The tests cover client utilities, storage, UI and authentication flows, plus server validation, auth policy, migrations, admin operations, and HTTP routes. They use offline fakes and do not require `.env` or a PostgreSQL service.
+
+For related checks, use `npm run test:watch` while developing, `npm run test:types` to type-check the tests, or `npm run test:coverage` to generate a coverage report.
+
 ## Backups and persistence
 
 The named Docker volume survives container rebuilds and restarts, but it is not a backup. Create regular PostgreSQL dumps and copy them off the server:
