@@ -18,6 +18,66 @@ export function normalizeName(value: string): string {
     .join(' ')
 }
 
+const proteinFamilies: Record<string, readonly string[]> = {
+  poultry: ['poultry', 'chicken', 'turkey', 'duck', 'goose', 'quail', 'pheasant'],
+  beef: ['beef', 'veal', 'bison'],
+  pork: ['pork'],
+  lamb: ['lamb', 'mutton'],
+  finfish: [
+    'fish', 'salmon', 'tuna', 'cod', 'haddock', 'halibut', 'tilapia', 'trout', 'catfish',
+    'sardine', 'anchovy', 'mackerel', 'snapper', 'bass', 'pollock', 'mahi', 'sole', 'swordfish',
+  ],
+  shellfish: [
+    'shrimp', 'prawn', 'crab', 'lobster', 'crayfish', 'crawfish', 'scallop', 'oyster',
+    'mussel', 'clam', 'squid', 'octopus',
+  ],
+}
+
+// These terms signal a stock, condiment, seasoning, or processed product rather than
+// a plainly identified protein ingredient. Such items still match by exact name above.
+const nonProteinProductTerms = new Set([
+  'stock', 'broth', 'bouillon', 'sauce', 'seasoning', 'flavor', 'flavoured', 'flavored',
+  'extract', 'base', 'powder', 'paste', 'sausage', 'bacon', 'ham', 'jerky', 'deli',
+  'nugget', 'nuggets', 'patty', 'patties', 'meatball', 'meatballs', 'burger', 'hamburger',
+  'hotdog', 'frankfurter', 'breaded', 'battered', 'smoked', 'cured',
+  'oil', 'egg', 'eggs', 'plant', 'vegan', 'vegetarian', 'meatless', 'imitation', 'substitute',
+  'salad', 'soup', 'casserole', 'pie', 'sandwich', 'wrap', 'taco', 'burrito', 'stew',
+])
+
+// Only permit common cut and preparation descriptors after a protein name. This
+// avoids treating a compound dish (for example, "chicken and rice") as poultry.
+const proteinFormTerms = new Set([
+  'ground', 'mince', 'minced', 'chopped', 'diced', 'sliced', 'cubed', 'strip', 'chunk',
+  'cutlet', 'fillet', 'breast', 'thigh', 'wing', 'drumstick', 'tender', 'tenderloin',
+  'loin', 'chop', 'steak', 'roast', 'rack', 'rib', 'leg', 'whole', 'meat', 'skinless',
+  'boneless', 'bone', 'in', 'out', 'bone-in', 'bone-out', 'skin-on', 'skin-off',
+  'fresh', 'frozen', 'raw', 'cooked',
+])
+
+function proteinFamily(value: string): string | undefined {
+  const words = normalizeName(value).split(' ')
+  if (words.some((word) => nonProteinProductTerms.has(word))) return undefined
+
+  const matched = Object.entries(proteinFamilies)
+    .flatMap(([family, names]) => names.filter((name) => words.includes(name)).map((name) => ({ family, name })))
+  const matchedFamilies = new Set(matched.map(({ family }) => family))
+  const matchedNames = new Set(matched.map(({ name }) => name))
+  if (matchedFamilies.size !== 1 || matchedNames.size !== 1) return undefined
+
+  const family = matched[0]?.family
+  return family && words.every((word) => matchedNames.has(word) || proteinFormTerms.has(word)) ? family : undefined
+}
+
+/** Returns whether two ingredient names are the same ingredient or clear substitutions within one animal-protein family. */
+export function ingredientNamesEquivalent(first: string, second: string): boolean {
+  const normalizedFirst = normalizeName(first)
+  const normalizedSecond = normalizeName(second)
+  if (!normalizedFirst || !normalizedSecond) return false
+  if (normalizedFirst === normalizedSecond) return true
+  const firstFamily = proteinFamily(normalizedFirst)
+  return Boolean(firstFamily && firstFamily === proteinFamily(normalizedSecond))
+}
+
 function validRecipe(value: unknown): value is Recipe {
   if (!value || typeof value !== 'object') return false
   const recipe = value as Partial<Recipe>
@@ -54,12 +114,11 @@ export function parseAppData(value: unknown): AppData {
 }
 
 export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[] {
-  const pantryNames = new Set(pantry.map(normalizeName))
   return recipes.map((recipe) => {
     const available: Ingredient[] = []
     const missing: Ingredient[] = []
     recipe.ingredients.forEach((ingredient) => {
-      if (pantryNames.has(normalizeName(ingredient.name))) available.push(ingredient)
+      if (pantry.some((pantryName) => ingredientNamesEquivalent(ingredient.name, pantryName))) available.push(ingredient)
       else missing.push(ingredient)
     })
     const percent = recipe.ingredients.length ? Math.round((available.length / recipe.ingredients.length) * 100) : 0

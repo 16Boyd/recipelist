@@ -9,7 +9,8 @@
     "start": "node dist-server/server/index.js",
     "db:migrate": "tsx server/migrate.ts",
     "admin:promote": "node dist-server/server/promote-admin.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --import tsx --test tests/lib.test.ts"
   },
   "dependencies": {
     "better-auth": "^1.7.11",
