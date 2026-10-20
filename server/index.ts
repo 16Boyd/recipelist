@@ -8,6 +8,7 @@ import { validateAppData, validateRecipe } from './validation.js'
 
 const app = express()
 const port = Number(process.env.PORT ?? 3000)
+const host = process.env.HOST ?? '0.0.0.0'
 const baseURL = new URL(process.env.BETTER_AUTH_URL!)
 
 app.disable('x-powered-by')
@@ -220,7 +221,7 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' })
 })
 
-const server = app.listen(port, '0.0.0.0', () => console.info(`RecipeList listening on ${port}`))
+const server = app.listen(port, host, () => console.info(`RecipeList listening on ${host}:${port}`))
 
 async function shutdown() {
   server.close()

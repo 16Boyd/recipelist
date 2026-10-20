@@ -1,0 +1,29 @@
+[Unit]
+Description=RecipeList web application
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=recipelist
+Group=recipelist
+WorkingDirectory=/opt/recipelist
+EnvironmentFile=/etc/recipelist/recipelist.env
+ExecStartPre=/usr/bin/env node dist-server/server/migrate.js
+ExecStart=/usr/bin/env node dist-server/server/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

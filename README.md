@@ -4,6 +4,11 @@
 
 RecipeList is a recipe and pantry planner. Browse the shared recipe catalog, track ingredients on hand, see which dinners are closest to ready, and turn missing ingredients into a shopping list. Accounts, pantry data, and shopping lists are stored in PostgreSQL on the server; the browser does not store app data.
 
+## Deployment options
+
+- **Docker Compose:** follow the guide below to run the app and PostgreSQL together in containers.
+- **Debian LXC:** follow the [native LXC installation guide](docs/lxc-install.md) to install PostgreSQL and run the app as a systemd service inside a Debian container.
+
 ## Self-host with Docker Compose
 
 The Compose setup runs the RecipeList app and PostgreSQL on one server. It automatically waits for PostgreSQL, applies the Better Auth and RecipeList database migrations, then starts the app. PostgreSQL is only available to the app over the Compose network. Its data is kept in the named `recipelist-data` volume.
