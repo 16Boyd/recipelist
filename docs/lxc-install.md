@@ -8,6 +8,8 @@ Use an unprivileged Debian 12 or 13 LXC with network access and persistent stora
 
 For a fresh install, the script installs the current supported Node.js LTS release (22 or newer), PostgreSQL, Git, build tools, and other required packages. It supports Debian 12 or 13 on amd64 and arm64. For updates, run the script as root: it installs missing Debian prerequisites and PostgreSQL client utilities, then installs the current supported Node.js LTS release if Node.js is missing, below version 22, or npm is missing or unusable. An existing Node.js 22-or-newer runtime with working npm is kept, whether or not it is still an LTS release. Updates do not install or initialize a PostgreSQL server. Keep PostgreSQL bound to loopback.
 
+The root-run installer requires `/usr/local`, `/usr/local/bin`, and `/usr/local/lib` to be protected from writes by non-root users. Debian's optional `root:staff` group-writable `/usr/local` setup is unsupported; the installer stops if it detects unsafe permissions. Do not loosen these paths to work around that check.
+
 ## Fresh install
 
 From a fresh Debian LXC, download the installer and run it as root:
@@ -20,6 +22,8 @@ sudo bash /tmp/recipelist-lxc.sh install
 ```
 
 The script installs and configures PostgreSQL and the systemd service, creates the application database and credentials, builds RecipeList under `/opt/recipelist`, and starts the service. It stores application configuration in root-owned `/etc/recipelist/recipelist.env`; secrets are not printed. Preserve a secure backup of this file because it contains the credentials required to run the app.
+
+If a fresh install fails before `recipelist.service` is created, it may have left some setup artifacts behind, such as the `recipelist` user or group, PostgreSQL role or database, `/etc/recipelist/recipelist.env`, or `/opt/recipelist`. Inspect each artifact and the reported error before deciding how to recover or retry. Do not automatically remove these paths or drop the database; the database may contain data. If the service unit was created, use the service status and journal diagnostics below instead of treating the failure as pre-unit cleanup.
 
 By default, RecipeList is local-only: it uses `http://localhost:3000` and listens on `127.0.0.1`. This is suitable when a reverse proxy runs in the same LXC. For a public HTTPS hostname, provide the intended origin at installation:
 
@@ -53,6 +57,8 @@ sudo journalctl -u recipelist -b
 
 The health endpoint should return `{"status":"ok"}`. The service runs database migrations before starting the app. If startup fails with systemd status `226/NAMESPACE`, inspect the journal and the host LXC/AppArmor policy for a denied namespace operation.
 
+For failures after the service unit exists, inspect `sudo systemctl status recipelist` and `sudo journalctl -u recipelist -b` before attempting recovery. Preserve the configuration and any database backup; migrations do not roll back automatically.
+
 ## Update an existing install
 
 An update keeps the existing database and `/etc/recipelist/recipelist.env` configuration. Download the updater and run it as root:
@@ -72,9 +78,9 @@ By default, the script updates to `main`. To select a branch, tag, or commit, us
 sudo bash /tmp/recipelist-lxc.sh update --ref v1.2.3
 ```
 
-After provisioning prerequisites and checking runtime/database compatibility, the updater fetches and resolves the requested ref before explicitly stopping the app. It then stops the app to create and validate a private PostgreSQL custom-format dump under `/var/backups/recipelist`, before checking out or building any code. If dump creation or archive-list verification fails, the updater best-effort restarts and health-checks the unchanged app if it was active before the stop; an app that was already inactive stays inactive. The app stays stopped for checkout, build, and startup migrations. Copy backups off the guest regularly. A successful archive listing checks that the dump can be read; it is not a restore test. Some migration failures may require manual recovery or restoring a backup. Failures after checkout begins do not roll back code or the database automatically and may leave the service stopped. Review the service journal and health endpoint after each update.
+After provisioning prerequisites and checking runtime/database compatibility, the updater fetches and resolves the requested ref before explicitly stopping the app. It then stops the app to create and validate a private PostgreSQL custom-format dump under `/var/backups/recipelist`, before checking out or building any code. If dump creation or archive-list verification fails, the updater best-effort restarts and health-checks the unchanged app if it was active before the stop; an app that was already inactive stays inactive. The app stays stopped for checkout, build, and startup migrations. If the repository's systemd unit changed, the updater stages it and publishes it with a daemon reload only after the build succeeds, before starting the app. Copy backups off the guest regularly. A successful archive listing checks that the dump can be read; it is not a restore test. Some migration failures may require manual recovery or restoring a backup. Failures after checkout begins do not roll back code or the database automatically and may leave the service stopped. Review the service journal and health endpoint after each update.
 
-The updater refuses to proceed when the application checkout has uncommitted changes. Commit or discard intended changes before updating.
+The installer and updater refuse to proceed when the service has systemd drop-ins. Drop-ins can override the managed service user and security settings; review and remove them before retrying. On a fresh install this check happens after the unit is written, but before the service is enabled or started. The updater also refuses an application checkout with uncommitted changes; commit or discard intended checkout changes before updating.
 
 ## Back up and restore
 

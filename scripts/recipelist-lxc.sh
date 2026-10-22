@@ -1,8 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Install/update RecipeList on a dedicated Debian LXC. Run as root.
 set -Eeuo pipefail
 umask 077
-export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# Keep privileged command lookup away from the optional /usr/local tree until
+# its ownership and permissions have been checked below.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 APP=/opt/recipelist
 ENV_FILE=/etc/recipelist/recipelist.env
 UNIT=/etc/systemd/system/recipelist.service
@@ -51,6 +53,160 @@ restore plus compatible code. Back up configuration separately.
 HELP
 }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+assert_root_path() {
+  local path=$1 kind=$2 part current=/ owner_mode
+  local -a parts=()
+  IFS=/ read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" ]] || continue
+    current=${current%/}/$part
+    [[ ! -L "$current" ]] || die "Symlink in protected path: $current"
+    owner_mode=$(stat -c '%u:%a' "$current" 2>/dev/null) || die "Missing protected path: $current"
+    [[ ${owner_mode%%:*} == 0 ]] || die "Protected path must be root-owned: $current"
+    if (( (8#${owner_mode#*:} & 8#022) != 0 )); then
+      if [[ "$current" == /usr/local || "$current" == /usr/local/lib || "$current" == /usr/local/bin ]]; then
+        die "Protected path is group/world writable: $current. Debian's optional staff-group-for-usr-local configuration is unsupported; restore root-owned, non-writable permissions before running this installer."
+      fi
+      die "Protected path is group/world writable: $current"
+    fi
+    if [[ "$current" != "$path" ]]; then
+      [[ -d "$current" ]] || die "Protected path ancestor is not a directory: $current"
+    elif [[ "$kind" == dir ]]; then
+      [[ -d "$current" ]] || die "Protected path is not a directory: $current"
+    else
+      [[ -f "$current" ]] || die "Protected path is not a regular file: $current"
+    fi
+  done
+}
+assert_safe_local_bin() {
+  local entry target
+  while IFS= read -r -d '' entry; do
+    [[ -d "$entry" ]] && continue
+    target=$(readlink -f -- "$entry") || die "Cannot resolve executable in protected path: $entry"
+    [[ -f "$target" ]] || die "Non-regular executable in protected path: $entry"
+    assert_root_path "$target" file
+  done < <(find /usr/local/bin -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
+}
+validate_service_unit() {
+  /usr/bin/python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    lines = path.read_text(encoding="utf-8").splitlines()
+except (OSError, UnicodeError) as exc:
+    sys.exit(f"Cannot read service unit as UTF-8: {exc}")
+
+# This is deliberately a small allowlist for the managed unit, not a general
+# systemd parser. Reject syntax we do not inspect rather than risk systemd
+# interpreting an override or privilege-affecting directive differently.
+allowed = {
+    "Unit": {"Description", "After", "Wants"},
+    "Service": {
+        "Type", "User", "Group", "WorkingDirectory", "EnvironmentFile",
+        "ExecStartPre", "ExecStart", "Restart", "RestartSec", "TimeoutStopSec",
+        "NoNewPrivileges", "PrivateTmp", "PrivateDevices", "ProtectSystem",
+        "ProtectHome", "ProtectKernelTunables", "ProtectKernelModules",
+        "ProtectControlGroups", "RestrictSUIDSGID", "LockPersonality",
+    },
+    "Install": {"WantedBy"},
+}
+expected = {
+    ("Unit", "Description"): "RecipeList web application",
+    ("Unit", "After"): "network.target postgresql.service",
+    ("Unit", "Wants"): "postgresql.service",
+    ("Service", "Type"): "simple",
+    ("Service", "User"): "recipelist",
+    ("Service", "Group"): "recipelist",
+    ("Service", "WorkingDirectory"): "/opt/recipelist",
+    ("Service", "EnvironmentFile"): "/etc/recipelist/recipelist.env",
+    ("Service", "ExecStartPre"): "/usr/bin/env node dist-server/server/migrate.js",
+    ("Service", "ExecStart"): "/usr/bin/env node dist-server/server/index.js",
+    ("Service", "Restart"): "on-failure",
+    ("Service", "RestartSec"): "5s",
+    ("Service", "TimeoutStopSec"): "30s",
+    ("Service", "NoNewPrivileges"): "true",
+    ("Service", "PrivateTmp"): "true",
+    ("Service", "PrivateDevices"): "true",
+    ("Service", "ProtectSystem"): "strict",
+    ("Service", "ProtectHome"): "true",
+    ("Service", "ProtectKernelTunables"): "true",
+    ("Service", "ProtectKernelModules"): "true",
+    ("Service", "ProtectControlGroups"): "true",
+    ("Service", "RestrictSUIDSGID"): "true",
+    ("Service", "LockPersonality"): "true",
+    ("Install", "WantedBy"): "multi-user.target",
+}
+sections = set()
+values = {}
+section = None
+for number, line in enumerate(lines, 1):
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", ";")):
+        continue
+    if line.endswith("\\"):
+        sys.exit(f"Unsupported line continuation in service unit at line {number}.")
+    if line != line.lstrip():
+        sys.exit(f"Unsupported leading whitespace in service unit at line {number}.")
+    match = re.fullmatch(r"\[([A-Za-z][A-Za-z0-9]*)\]", line)
+    if match:
+        section = match.group(1)
+        if section not in allowed:
+            sys.exit(f"Unsupported service unit section [{section}].")
+        if section in sections:
+            sys.exit(f"Duplicate service unit section [{section}].")
+        sections.add(section)
+        continue
+    match = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)=(.*)", line)
+    if not match or section is None:
+        sys.exit(f"Unsupported service unit syntax at line {number}.")
+    key, value = match.groups()
+    if key not in allowed[section]:
+        sys.exit(f"Unsupported directive {key} in [{section}].")
+    identity = (section, key)
+    if identity in values:
+        sys.exit(f"Duplicate directive {key} in [{section}].")
+    if not value or value != value.strip():
+        sys.exit(f"Empty or whitespace-padded directive {key} in [{section}].")
+    if key.startswith("Exec"):
+        # Require a plain absolute executable path as the first token. This
+        # excludes systemd's + and ! privilege-bypass prefixes (and all other
+        # command prefixes) without trying to emulate its command lexer.
+        if not re.match(r"^/[^\s;#'\"\\]+(?:[ \t]+.*)?$", value):
+            sys.exit(f"Unsupported or privileged command syntax in {key}.")
+    values[identity] = value
+
+if sections != set(allowed):
+    sys.exit("Service unit must contain exactly [Unit], [Service] and [Install] sections.")
+if values != expected:
+    sys.exit("Service unit directives must match the managed RecipeList systemd unit exactly.")
+PY
+}
+assert_no_unit_dropin_files() {
+  local unit_paths base dropin_dir dropin
+  local -a search_paths=()
+  unit_paths=$(systemctl show --property=UnitPath --value) || die 'Could not inspect systemd unit search paths.'
+  [[ -n "$unit_paths" ]] || die 'Systemd reported no unit search paths.'
+  read -r -a search_paths <<< "$unit_paths"
+  for base in "${search_paths[@]}"; do
+    for dropin_dir in "$base/recipelist.service.d" "$base/service.d"; do
+      [[ -d "$dropin_dir" ]] || continue
+      assert_root_path "$dropin_dir" dir
+      dropin=$(find "$dropin_dir" -mindepth 1 -maxdepth 1 -name '*.conf' -print -quit)
+      if [[ -n "$dropin" ]]; then
+        die "RecipeList systemd drop-in exists: $dropin. Review the effective unit configuration manually before proceeding."
+      fi
+    done
+  done
+}
+assert_no_unit_dropins() {
+  local dropins
+  assert_no_unit_dropin_files
+  dropins=$(systemctl show --property=DropInPaths --value recipelist.service) || die 'Could not inspect merged RecipeList systemd unit drop-ins.'
+  [[ -z "$dropins" ]] || die 'RecipeList systemd drop-ins are unsupported; review the effective unit configuration manually before proceeding.'
+}
 cleanup() {
   local code=$?
   trap - EXIT
@@ -67,7 +223,7 @@ cleanup() {
   fi
   if (( code != 0 )) && [[ "$OPERATION_STARTED" == true ]]; then
     if [[ "$MODE" == install && ! -e "$UNIT" ]]; then
-      printf 'Install did not complete and may have made partial system changes. Review the errors above before retrying.\n' >&2
+      printf 'Install did not complete and may have made partial system changes: the recipelist user/group, PostgreSQL role/database, %s, and %s may already exist. Review the errors above before retrying; partial artifacts and PostgreSQL data are not removed automatically.\n' "$ENV_FILE" "$APP" >&2
     else
       printf 'RecipeList operation failed. Inspect: journalctl -u recipelist -b\n' >&2
     fi
@@ -127,6 +283,14 @@ else
     [[ "$URL" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$ ]] || die 'Non-loopback URLs require HTTPS.'
   fi
 fi
+# Debian's default /usr/local permissions are root:root and not writable by
+# group or others. A staff-writable /usr/local is intentionally unsupported:
+# commands there must not be trusted during privileged package/setup work.
+assert_root_path /usr/local/lib dir
+assert_root_path /usr/local/bin dir
+assert_safe_local_bin
+PATH=/usr/local/bin:$PATH
+export PATH
 install_missing_packages() {
   local package
   local -a missing=()
@@ -318,26 +482,6 @@ check_node() {
   node_supported || die 'A working Node >=22 and npm are required after runtime provisioning.'
   printf 'Using Node %s.\n' "$(node --version)"
 }
-assert_root_path() {
-  local path=$1 kind=$2 part current=/ owner_mode
-  local -a parts=()
-  IFS=/ read -r -a parts <<< "$path"
-  for part in "${parts[@]}"; do
-    [[ -n "$part" ]] || continue
-    current=${current%/}/$part
-    [[ ! -L "$current" ]] || die "Symlink in protected path: $current"
-    owner_mode=$(stat -c '%u:%a' "$current" 2>/dev/null) || die "Missing protected path: $current"
-    [[ ${owner_mode%%:*} == 0 ]] || die "Protected path must be root-owned: $current"
-    (( (8#${owner_mode#*:} & 8#022) == 0 )) || die "Protected path is group/world writable: $current"
-    if [[ "$current" != "$path" ]]; then
-      [[ -d "$current" ]] || die "Protected path ancestor is not a directory: $current"
-    elif [[ "$kind" == dir ]]; then
-      [[ -d "$current" ]] || die "Protected path is not a directory: $current"
-    else
-      [[ -f "$current" ]] || die "Protected path is not a regular file: $current"
-    fi
-  done
-}
 install_node() {
   local arch version archive link
   case "$(dpkg --print-architecture)" in
@@ -391,6 +535,8 @@ if [[ "$MODE" == install ]]; then
   for path in "$APP" /etc/recipelist "$UNIT" /lib/systemd/system/recipelist.service /usr/lib/systemd/system/recipelist.service; do
     [[ ! -e "$path" && ! -L "$path" ]] || die "Existing installation artifact: $path"
   done
+  assert_root_path /etc/systemd/system dir
+  assert_no_unit_dropin_files
   ! getent passwd recipelist >/dev/null || die 'User recipelist already exists.'
   ! getent group recipelist >/dev/null || die 'Group recipelist already exists.'
   ! systemctl cat recipelist.service >/dev/null 2>&1 || die 'RecipeList unit already exists.'
@@ -437,13 +583,16 @@ CONFIG
   CONFIG_TMP=
   unset PASSWORD SECRET
   git_safe clone --branch main --single-branch "$REPO" "$APP"
-  UNIT_TMP=$(mktemp "$LOCK_DIR/unit.XXXXXX")
-  install -o root -g root -m 0600 "$APP/deploy/lxc/recipelist.service" "$UNIT_TMP"
+  UNIT_SOURCE=$APP/deploy/lxc/recipelist.service
+  assert_root_path "$UNIT_SOURCE" file
+  validate_service_unit "$UNIT_SOURCE"
+  UNIT_TMP=$(mktemp /etc/systemd/system/.recipelist.service.XXXXXX)
+  install -o root -g root -m 0644 "$UNIT_SOURCE" "$UNIT_TMP"
   build
-  install -o root -g root -m 0644 "$UNIT_TMP" "$UNIT"
-  rm -f -- "$UNIT_TMP"
+  mv -fT -- "$UNIT_TMP" "$UNIT"
   UNIT_TMP=
   systemctl daemon-reload
+  assert_no_unit_dropins
   systemctl enable --now recipelist
   health
 else
@@ -467,6 +616,7 @@ else
   fi
   [[ -z $(git_safe -C "$APP" status --porcelain --untracked-files=all) ]] || die 'Checkout has tracked or untracked changes.'
   cmp -s "$UNIT" "$APP/deploy/lxc/recipelist.service" || die 'Installed service differs from the repository unit; review it manually before updating.'
+  assert_no_unit_dropins
   systemctl is-active --quiet postgresql || die 'PostgreSQL must be running.'
   db_exists && role_exists || die 'Existing recipelist database and role are required.'
   ensure_pg_dump_compatible
@@ -493,6 +643,13 @@ JS
   done
   if [[ "$REF" =~ ^[0-9a-fA-F]{40}$ ]] && TARGET=$(git_safe -C "$APP" rev-parse --verify "$REF^{commit}" 2>/dev/null); then CANDIDATES+=("$TARGET"); fi
   (( ${#CANDIDATES[@]} == 1 )) || die 'Ref is missing or ambiguous; specify a unique branch/tag or full commit ID.'
+  # Validate and stage the selected unit before stopping RecipeList. Git show
+  # reads the resolved immutable commit, so build scripts cannot alter it.
+  UNIT_TMP=$(mktemp /etc/systemd/system/.recipelist.service.XXXXXX)
+  git_safe -C "$APP" show "${CANDIDATES[0]}:deploy/lxc/recipelist.service" > "$UNIT_TMP"
+  chown root:root "$UNIT_TMP"
+  chmod 0644 "$UNIT_TMP"
+  validate_service_unit "$UNIT_TMP"
   prepare_backup_directory
   printf 'Stopping RecipeList to create and verify a private database backup; no code changes will occur until verification succeeds.\n'
   if systemctl is-active --quiet recipelist; then SERVICE_WAS_ACTIVE=true; else SERVICE_WAS_ACTIVE=false; fi
@@ -506,7 +663,21 @@ JS
   printf 'Verified archive: %s (archive verification is not a restore test).\n' "$BACKUP"
   printf 'Checking out target and rebuilding while RecipeList remains stopped; migrations do not roll back automatically.\n'
   git_safe -C "$APP" checkout --detach "${CANDIDATES[0]}"
+  UNIT_SOURCE=$APP/deploy/lxc/recipelist.service
+  assert_root_path "$UNIT_SOURCE" file
+  [[ -f "$UNIT_SOURCE" && ! -L "$UNIT_SOURCE" && $(stat -c '%u' "$UNIT_SOURCE") == 0 ]] || die 'Target checkout service unit must be a regular root-owned file.'
+  cmp -s "$UNIT_SOURCE" "$UNIT_TMP" || die 'Checked-out service unit differs from the validated target commit.'
+  # The validated copy is outside the checkout before any build script runs.
   build
+  if ! cmp -s "$UNIT_TMP" "$UNIT"; then
+    mv -fT -- "$UNIT_TMP" "$UNIT"
+    UNIT_TMP=
+    systemctl daemon-reload
+    assert_no_unit_dropins
+  else
+    rm -f -- "$UNIT_TMP"
+    UNIT_TMP=
+  fi
   systemctl start recipelist
   health
   STOPPED=false
