@@ -2,11 +2,11 @@
 
 RecipeList runs directly in a Debian LXC with PostgreSQL and systemd; Docker is not required. The repository includes one script for a fresh install and for updating an existing install.
 
-Use an unprivileged Debian 12 or 13 LXC with network access and persistent storage. Allocate enough disk for PostgreSQL data and backups. Run the commands below inside the guest as an administrator with `sudo`.
+Use an unprivileged Debian 12 or 13 LXC with network access and persistent storage. Allocate enough disk for PostgreSQL data and backups. Run the commands below inside the guest as an administrator with `sudo`; if already logged in as root, omit `sudo`.
 
 ## Requirements
 
-For a fresh install, the script installs the current supported Node.js LTS release (22 or newer), PostgreSQL, Git, build tools, and other required packages. It supports Debian 12 or 13 on amd64 and arm64. For updates, Node.js and npm must already be installed and available on PATH at version 22 or newer; updates do not change the runtime. Keep PostgreSQL bound to loopback.
+For a fresh install, the script installs the current supported Node.js LTS release (22 or newer), PostgreSQL, Git, build tools, and other required packages. It supports Debian 12 or 13 on amd64 and arm64. For updates, run the script as root: it installs missing Debian prerequisites and PostgreSQL client utilities, then installs the current supported Node.js LTS release if Node.js is missing, below version 22, or npm is missing or unusable. An existing Node.js 22-or-newer runtime with working npm is kept, whether or not it is still an LTS release. Updates do not install or initialize a PostgreSQL server. Keep PostgreSQL bound to loopback.
 
 ## Fresh install
 
@@ -55,12 +55,16 @@ The health endpoint should return `{"status":"ok"}`. The service runs database m
 
 ## Update an existing install
 
-An update keeps the existing database and `/etc/recipelist/recipelist.env` configuration. Ensure Node.js 22 or newer and npm are installed, then download the updater and run it:
+An update keeps the existing database and `/etc/recipelist/recipelist.env` configuration. Download the updater and run it as root:
 
 ```sh
 curl --fail --location --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/16Boyd/recipelist/main/scripts/recipelist-lxc.sh -o /tmp/recipelist-lxc.sh
 sudo bash /tmp/recipelist-lxc.sh update
 ```
+
+Downloading the script requires `curl` and CA certificates. If they are missing, use the bootstrap commands in the Fresh install section (`sudo apt-get update` and `sudo apt-get install -y ca-certificates curl`) before downloading. Once the script is downloaded, running it as root handles the other required Debian packages and Node.js/npm setup. It requests only missing Debian packages, without a broad upgrade, and does not install or initialize a PostgreSQL server. It checks that the installed PostgreSQL client is compatible with the running server before stopping RecipeList; it installs a matching client package if available, otherwise it aborts.
+
+The updater validates the architecture and ref syntax before package changes, then provisions prerequisites and resolves the ref before explicitly stopping RecipeList. Apt hooks can still restart system services during package installation. An existing Node.js 22-or-newer runtime with working npm is retained regardless of its LTS status. If Node.js is missing or below 22, or npm is missing or unusable, the updater stages and verifies the current supported LTS runtime before switching the `node`, `npm`, and `npx` command links. npm may need network access to download dependencies during the build, after RecipeList has stopped.
 
 By default, the script updates to `main`. To select a branch, tag, or commit, use `--ref`:
 
@@ -68,7 +72,7 @@ By default, the script updates to `main`. To select a branch, tag, or commit, us
 sudo bash /tmp/recipelist-lxc.sh update --ref v1.2.3
 ```
 
-The updater fetches and resolves the requested ref while the app is still running. It then stops the app briefly to create and validate a private PostgreSQL custom-format dump under `/var/backups/recipelist`, before checking out or building any code. If dump creation or archive-list verification fails, the updater best-effort restarts and health-checks the unchanged app if it was active before the stop; an app that was already inactive stays inactive. The app stays stopped for checkout, build, and startup migrations. Copy backups off the guest regularly. A successful archive listing checks that the dump can be read; it is not a restore test. Some migration failures may require manual recovery or restoring a backup. Failures after checkout begins do not roll back code or the database automatically and may leave the service stopped. Review the service journal and health endpoint after each update.
+After provisioning prerequisites and checking runtime/database compatibility, the updater fetches and resolves the requested ref before explicitly stopping the app. It then stops the app to create and validate a private PostgreSQL custom-format dump under `/var/backups/recipelist`, before checking out or building any code. If dump creation or archive-list verification fails, the updater best-effort restarts and health-checks the unchanged app if it was active before the stop; an app that was already inactive stays inactive. The app stays stopped for checkout, build, and startup migrations. Copy backups off the guest regularly. A successful archive listing checks that the dump can be read; it is not a restore test. Some migration failures may require manual recovery or restoring a backup. Failures after checkout begins do not roll back code or the database automatically and may leave the service stopped. Review the service journal and health endpoint after each update.
 
 The updater refuses to proceed when the application checkout has uncommitted changes. Commit or discard intended changes before updating.
 

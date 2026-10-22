@@ -12,6 +12,11 @@ TMP=
 CONFIG_TMP=
 UNIT_TMP=
 BUILD_HOME=
+NODE_STAGE=
+NODE_LINK_STAGE=
+NODE_PUBLISHED=false
+PG_DUMP=
+PG_RESTORE=
 BUILD_ACTIVE=false
 LOCK_DIR=/run/recipelist-lxc
 STOPPED=false
@@ -29,10 +34,15 @@ require HTTPS. Bind may be 127.0.0.1 or explicitly 0.0.0.0 for an external
 proxy. Firewall port 3000 to that proxy only; trusted proxies must overwrite
 Host, X-Forwarded-Host and X-Forwarded-Proto with the original host/protocol.
 
-Update preserves configuration/data and requires a clean checkout. It checks
-Node >=22 without upgrading it. The update ref is fetched and resolved before
-stopping the app. The app stops briefly while a private PostgreSQL custom dump
-is created and verified; a dump/list failure restarts the unchanged app only if
+Update preserves configuration/data and requires a clean checkout. Run as root:
+it installs missing Debian prerequisites and PostgreSQL client tools, and installs
+the latest supported Node LTS if Node/npm are missing, unusable or Node is below 22.
+An existing Node >=22 with working npm is kept. PostgreSQL must already be installed and
+running; update does not install its server. Provisioning and ref resolution finish
+before the app is stopped, though apt hooks may restart system services. npm ci can
+still download dependencies while RecipeList is stopped. The app stops briefly
+while a private PostgreSQL custom dump is created and verified; a dump/list failure
+restarts the unchanged app only if
 it was active beforehand, and leaves an inactive app inactive. Archive
 verification is NOT a restore test. The app stays down during checkout/build/
 migrations until health succeeds. Failures after checkout starts may leave it
@@ -50,6 +60,8 @@ cleanup() {
   [[ -z "$CONFIG_TMP" ]] || rm -f -- "$CONFIG_TMP"
   [[ -z "$UNIT_TMP" ]] || rm -f -- "$UNIT_TMP"
   [[ -z "$BUILD_HOME" ]] || rm -rf -- "$BUILD_HOME"
+  [[ -z "$NODE_LINK_STAGE" ]] || rm -rf -- "$NODE_LINK_STAGE"
+  [[ -z "$NODE_STAGE" || "$NODE_PUBLISHED" == true ]] || rm -rf -- "$NODE_STAGE"
   if [[ "$BUILD_ACTIVE" == true ]]; then
     secure_app || printf 'Could not fully restore protected checkout ownership and modes; inspect %s manually.\n' "$APP" >&2
   fi
@@ -95,6 +107,40 @@ trap 'printf "Command failed at line %s (exit %s).\n" "$LINENO" "$?" >&2' ERR
 . /etc/os-release
 [[ "$ID" == debian && ( "$VERSION_ID" == 12 || "$VERSION_ID" == 13 ) ]] || die 'Debian 12 or 13 is required.'
 [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null || die 'A running systemd guest is required.'
+# Reject unsupported inputs before apt can make system changes.
+case "$(dpkg --print-architecture)" in amd64|arm64) ;; *) die 'Unsupported Debian architecture; latest-LTS installs support amd64 and arm64 only.' ;; esac
+if [[ "$MODE" == update ]]; then
+  [[ "$REF" != -* && "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$REF" != *..* && "$REF" != */ && "$REF" != *. ]] || die 'Unsafe ref; use a branch, tag or full commit ID.'
+  IFS=/ read -r -a REF_PARTS <<< "$REF"
+  for ref_part in "${REF_PARTS[@]}"; do
+    [[ -n "$ref_part" && "$ref_part" != .* && "$ref_part" != *.lock ]] || die 'Unsafe ref; use a branch, tag or full commit ID.'
+  done
+else
+  [[ "$BIND" == 127.0.0.1 || "$BIND" == 0.0.0.0 ]] || die 'Bind address must be 127.0.0.1 or 0.0.0.0.'
+  [[ "$PROXY" == true || "$PROXY" == false ]] || die 'trust-proxy must be true or false.'
+  [[ "$URL" =~ ^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[::1\])(:([0-9]+))?/?$ ]] || die 'URL must be an HTTP(S) origin without credentials, path, query or fragment.'
+  URL_PORT=${BASH_REMATCH[4]:-}
+  if [[ -n "$URL_PORT" ]]; then
+    [[ ${#URL_PORT} -le 5 ]] && (( 10#$URL_PORT >= 1 && 10#$URL_PORT <= 65535 )) || die 'URL port must be between 1 and 65535.'
+  fi
+  if [[ "$URL" == http://* ]]; then
+    [[ "$URL" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$ ]] || die 'Non-loopback URLs require HTTPS.'
+  fi
+fi
+install_missing_packages() {
+  local package
+  local -a missing=()
+  for package in "$@"; do
+    if [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null) != 'install ok installed' ]]; then
+      missing+=("$package")
+    fi
+  done
+  if (( ${#missing[@]} )); then
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+install_missing_packages util-linux
 command -v flock >/dev/null || die 'flock (util-linux) is required.'
 [[ ! -L /run && -d /run && $(stat -c '%u:%a' /run) == 0:755 ]] || die 'Unsafe /run directory.'
 [[ ! -L "$LOCK_DIR" ]] || die 'Unsafe installer runtime directory.'
@@ -113,7 +159,8 @@ fi
 exec 9>>"$LOCK_DIR/lock"
 flock -n 9 || die 'Another RecipeList installer/updater is running.'
 cd /
-pg() { runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -At "$@"; }
+pg_run() { runuser -u postgres -- /usr/bin/env -i PATH="$PATH" LC_ALL=C "$@"; }
+pg() { pg_run psql -X -h /var/run/postgresql -p 5432 -U postgres -v ON_ERROR_STOP=1 -At "$@"; }
 git_safe() {
   env -u GIT_CONFIG_PARAMETERS -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_EXEC_PATH \
@@ -123,10 +170,53 @@ git_safe() {
 }
 db_exists() { [[ $(pg -d postgres -c "SELECT 1 FROM pg_database WHERE datname='recipelist'") == 1 ]]; }
 role_exists() { [[ $(pg -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname='recipelist'") == 1 ]]; }
+ensure_pg_dump_compatible() {
+  local server_version server_major selected_major client_dump_version client_restore_version dump_major restore_major path candidate
+  local exact_found=false
+  local -a candidates=()
+  server_version=$(pg -d postgres -c 'SHOW server_version_num')
+  [[ "$server_version" =~ ^[0-9]+$ ]] || die 'Could not determine the PostgreSQL server version.'
+  server_major=$((server_version / 10000))
+  for path in /usr/lib/postgresql/[0-9]*; do
+    [[ -d "$path" ]] || continue
+    candidate=${path##*/}
+    [[ "$candidate" =~ ^[0-9]+$ ]] || continue
+    (( candidate >= server_major )) || continue
+    [[ -x "$path/bin/pg_dump" && -x "$path/bin/pg_restore" ]] || continue
+    if (( candidate == server_major )); then
+      exact_found=true
+    else
+      candidates+=("$candidate")
+    fi
+  done
+  if [[ "$exact_found" == true ]]; then
+    selected_major=$server_major
+  elif (( ${#candidates[@]} )); then
+    selected_major=${candidates[0]}
+    for candidate in "${candidates[@]}"; do
+      (( candidate > selected_major )) && selected_major=$candidate
+    done
+  else
+    install_missing_packages "postgresql-client-$server_major"
+    path="/usr/lib/postgresql/$server_major"
+    [[ -x "$path/bin/pg_dump" && -x "$path/bin/pg_restore" ]] || die "PostgreSQL client major $server_major is unavailable after package installation."
+    selected_major=$server_major
+  fi
+  path="/usr/lib/postgresql/$selected_major/bin"
+  PG_DUMP="$path/pg_dump"
+  PG_RESTORE="$path/pg_restore"
+  client_dump_version=$(pg_run "$PG_DUMP" --version) || die "Selected pg_dump client major $selected_major is unusable as postgres."
+  client_restore_version=$(pg_run "$PG_RESTORE" --version) || die "Selected pg_restore client major $selected_major is unusable as postgres."
+  [[ "$client_dump_version" =~ PostgreSQL\)\ ([0-9]+)\. ]] || die 'Could not determine selected pg_dump version.'
+  dump_major=${BASH_REMATCH[1]}
+  [[ "$client_restore_version" =~ PostgreSQL\)\ ([0-9]+)\. ]] || die 'Could not determine selected pg_restore version.'
+  restore_major=${BASH_REMATCH[1]}
+  (( dump_major >= server_major && restore_major == dump_major )) || die "Selected PostgreSQL client pair is incompatible with server major $server_major."
+}
 secure_app() {
   chown -R -P --no-dereference root:root -- "$APP" || return $?
-  chmod -R -P u+rwX -- "$APP" || return $?
-  chmod -R -P a+rX,go-w -- "$APP" || return $?
+  chmod -R u+rwX -- "$APP" || return $?
+  chmod -R a+rX,go-w -- "$APP" || return $?
   chmod 0755 "$APP" || return $?
   chown root:root "$ENV_FILE" || return $?
   chmod 0600 "$ENV_FILE" || return $?
@@ -147,7 +237,7 @@ build() {
     if find "$APP" -mindepth 1 -path "$APP/.git" -prune -o -exec chown --no-dereference recipelist:recipelist -- {} +; then :; else build_status=$?; fi
   fi
   if (( build_status == 0 )); then
-    if chown -R -P --no-dereference root:root -- "$APP/.git" && chmod -R -P a-w -- "$APP/.git"; then :; else build_status=$?; fi
+    if chown -R -P --no-dereference root:root -- "$APP/.git" && chmod -R a-w -- "$APP/.git"; then :; else build_status=$?; fi
   fi
   if (( build_status == 0 )); then
     if chown --no-dereference recipelist:recipelist -- "$BUILD_HOME" && chmod 0700 -- "$BUILD_HOME"; then :; else build_status=$?; fi
@@ -219,10 +309,14 @@ backup_failure() {
   fi
   die "$reason; update aborted before checkout."
 }
+node_supported() {
+  command -v node >/dev/null && command -v npm >/dev/null &&
+    node -e 'if(Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' &&
+    npm --version >/dev/null
+}
 check_node() {
-  command -v node >/dev/null && command -v npm >/dev/null || die 'Install a supported Node LTS >=22 and npm manually before updating.'
-  node -e 'if(Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' || die 'Node >=22 required; upgrade runtime manually before updating.'
-  printf 'Using Node %s; routine updates do not change the runtime.\n' "$(node --version)"
+  node_supported || die 'A working Node >=22 and npm are required after runtime provisioning.'
+  printf 'Using Node %s.\n' "$(node --version)"
 }
 assert_root_path() {
   local path=$1 kind=$2 part current=/ owner_mode
@@ -245,7 +339,7 @@ assert_root_path() {
   done
 }
 install_node() {
-  local arch version archive
+  local arch version archive link
   case "$(dpkg --print-architecture)" in
     amd64) arch=x64 ;; arm64) arch=arm64 ;;
     *) die 'Unsupported Debian architecture; latest-LTS installs support amd64 and arm64 only.' ;;
@@ -267,23 +361,33 @@ PY
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "https://nodejs.org/dist/$version/$archive" -o "$TMP/$archive"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "https://nodejs.org/dist/$version/SHASUMS256.txt" -o "$TMP/SHASUMS256.txt"
   (cd "$TMP"; awk -v file="$archive" '$2 == file { print; found=1 } END { if (!found) exit 1 }' SHASUMS256.txt > selected.sha256; sha256sum --check selected.sha256)
-  tar -xJf "$TMP/$archive" -C /usr/local --strip-components=1 --no-same-owner
+  assert_root_path /usr/local dir
+  assert_root_path /usr/local/lib dir
+  assert_root_path /usr/local/bin dir
+  NODE_STAGE=$(mktemp -d /usr/local/lib/recipelist-node.XXXXXX)
+  tar -xJf "$TMP/$archive" -C "$NODE_STAGE" --strip-components=1 --no-same-owner
+  chmod -R a+rX,go-w "$NODE_STAGE"
+  [[ -x "$NODE_STAGE/bin/node" && -x "$NODE_STAGE/bin/npm" && -x "$NODE_STAGE/bin/npx" && -f "$NODE_STAGE/lib/node_modules/npm/bin/npm-cli.js" ]] || die 'Downloaded Node archive is missing runtime commands.'
+  "$NODE_STAGE/bin/node" -e 'if(Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
+  "$NODE_STAGE/bin/node" "$NODE_STAGE/lib/node_modules/npm/bin/npm-cli.js" --version >/dev/null
+  for link in node npm npx; do
+    [[ ! -d "/usr/local/bin/$link" || -L "/usr/local/bin/$link" ]] || die "Cannot replace directory /usr/local/bin/$link with a Node command."
+  done
+  NODE_LINK_STAGE=$(mktemp -d /usr/local/bin/.recipelist-node-links.XXXXXX)
+  for link in node npm npx; do ln -s "$NODE_STAGE/bin/$link" "$NODE_LINK_STAGE/$link"; done
+  # Preserve the verified tree across a signal during any of these replacements.
+  NODE_PUBLISHED=true
+  for link in node npm npx; do
+    mv -Tf "$NODE_LINK_STAGE/$link" "/usr/local/bin/$link"
+  done
+  rmdir "$NODE_LINK_STAGE"
+  NODE_LINK_STAGE=
+  NODE_STAGE=
+  NODE_PUBLISHED=false
   hash -r
   check_node
 }
 if [[ "$MODE" == install ]]; then
-  [[ "$BIND" == 127.0.0.1 || "$BIND" == 0.0.0.0 ]] || die 'Bind address must be 127.0.0.1 or 0.0.0.0.'
-  [[ "$PROXY" == true || "$PROXY" == false ]] || die 'trust-proxy must be true or false.'
-  # Validate the origin before installing packages (no whitespace or shell syntax).
-  [[ "$URL" =~ ^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[::1\])(:([0-9]+))?/?$ ]] || die 'URL must be an HTTP(S) origin without credentials, path, query or fragment.'
-  URL_PORT=${BASH_REMATCH[3]:-}
-  if [[ -n "$URL_PORT" ]]; then
-    [[ ${#URL_PORT} -le 5 ]] && (( 10#$URL_PORT >= 1 && 10#$URL_PORT <= 65535 )) || die 'URL port must be between 1 and 65535.'
-  fi
-  if [[ "$URL" == http://* ]]; then
-    [[ "$URL" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$ ]] || die 'Non-loopback URLs require HTTPS.'
-  fi
-  case "$(dpkg --print-architecture)" in amd64|arm64) ;; *) die 'Unsupported Debian architecture; latest-LTS installs support amd64 and arm64 only.' ;; esac
   for path in "$APP" /etc/recipelist "$UNIT" /lib/systemd/system/recipelist.service /usr/lib/systemd/system/recipelist.service; do
     [[ ! -e "$path" && ! -L "$path" ]] || die "Existing installation artifact: $path"
   done
@@ -292,7 +396,8 @@ if [[ "$MODE" == install ]]; then
   ! systemctl cat recipelist.service >/dev/null 2>&1 || die 'RecipeList unit already exists.'
   OPERATION_STARTED=true
   apt-get update
-  apt-get install -y ca-certificates curl git build-essential postgresql postgresql-client openssl python3 xz-utils
+  apt-get install -y --no-install-recommends ca-certificates curl git build-essential postgresql postgresql-client openssl python3 xz-utils util-linux
+  command -v runuser >/dev/null || die 'runuser (util-linux) is required.'
   python3 - "$URL" <<'PY'
 import sys, urllib.parse
 u = urllib.parse.urlsplit(sys.argv[1])
@@ -342,7 +447,10 @@ CONFIG
   systemctl enable --now recipelist
   health
 else
-  for command in git curl runuser psql pg_dump pg_restore npm node; do command -v "$command" >/dev/null || die "Missing required command: $command"; done
+  # Provision before preflight or downtime. Client tools do not install or
+  # initialize a PostgreSQL server; the existing database remains required.
+  install_missing_packages ca-certificates curl git build-essential postgresql-client openssl python3 xz-utils util-linux
+  for command in git curl runuser psql; do command -v "$command" >/dev/null || die "Missing required command: $command"; done
   assert_root_path /opt/recipelist dir
   assert_root_path /etc/recipelist dir
   assert_root_path "$ENV_FILE" file
@@ -358,11 +466,14 @@ else
     die 'Custom Git filters are not supported in the protected checkout.'
   fi
   [[ -z $(git_safe -C "$APP" status --porcelain --untracked-files=all) ]] || die 'Checkout has tracked or untracked changes.'
-  [[ "$REF" != -* && "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$REF" != *..* ]] || die 'Unsafe ref; use a branch, tag or full commit ID.'
   cmp -s "$UNIT" "$APP/deploy/lxc/recipelist.service" || die 'Installed service differs from the repository unit; review it manually before updating.'
-  check_node
   systemctl is-active --quiet postgresql || die 'PostgreSQL must be running.'
   db_exists && role_exists || die 'Existing recipelist database and role are required.'
+  ensure_pg_dump_compatible
+  if ! node_supported; then
+    install_node
+  fi
+  check_node
   # Do not source an environment file as shell code. Verify this managed local layout.
   [[ $(stat -c '%u:%a' "$ENV_FILE") == 0:600 ]] || die 'Configuration must be root-owned with mode 0600.'
   /usr/bin/env node --input-type=module - "$ENV_FILE" <<'JS'
@@ -385,13 +496,13 @@ JS
   prepare_backup_directory
   printf 'Stopping RecipeList to create and verify a private database backup; no code changes will occur until verification succeeds.\n'
   if systemctl is-active --quiet recipelist; then SERVICE_WAS_ACTIVE=true; else SERVICE_WAS_ACTIVE=false; fi
-  systemctl stop recipelist
   STOPPED=true
+  if systemctl stop recipelist; then :; else backup_failure 'could not stop RecipeList for backup'; fi
   if BACKUP=$(runuser -u postgres -- mktemp "/var/backups/recipelist/recipelist-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.dump"); then :; else backup_failure 'could not create the private dump file'; fi
   [[ -f "$BACKUP" && ! -L "$BACKUP" && $(stat -c '%U:%G:%a' "$BACKUP") == postgres:postgres:600 ]] || backup_failure 'the dump file is not a private PostgreSQL-owned file'
-  if runuser -u postgres -- pg_dump --format=custom --dbname=recipelist --file="$BACKUP"; then :; else backup_failure 'pg_dump failed'; fi
+  if pg_run "$PG_DUMP" --host=/var/run/postgresql --port=5432 --username=postgres --format=custom --dbname=recipelist --file="$BACKUP"; then :; else backup_failure 'pg_dump failed'; fi
   [[ -s "$BACKUP" ]] || backup_failure 'the database dump is empty'
-  if runuser -u postgres -- pg_restore --list "$BACKUP" >/dev/null; then :; else backup_failure 'pg_restore --list could not read the dump'; fi
+  if pg_run "$PG_RESTORE" --list "$BACKUP" >/dev/null; then :; else backup_failure 'pg_restore --list could not read the dump'; fi
   printf 'Verified archive: %s (archive verification is not a restore test).\n' "$BACKUP"
   printf 'Checking out target and rebuilding while RecipeList remains stopped; migrations do not roll back automatically.\n'
   git_safe -C "$APP" checkout --detach "${CANDIDATES[0]}"
