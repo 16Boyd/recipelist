@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:types": "tsc --noEmit -p tsconfig.test.json",
     "test:coverage": "vitest run --coverage",
-    "docs:coverage": "node scripts/check-docstring-coverage.mjs"
+    "docs:coverage": "node scripts/check-docstring-coverage.mjs --self-test && node scripts/check-docstring-coverage.mjs"
   },
   "dependencies": {
     "better-auth": "^1.7.11",

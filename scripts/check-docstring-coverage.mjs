@@ -54,8 +54,7 @@ function isProductionTypeScriptFile(file) {
     && !/\.d\.ts$/.test(file)
     && !/\.generated\.tsx?$/.test(file)
     && !/(?:^|\.){1}(?:test|spec)\.[^.]+$/.test(file)
-    && !/(?:^|[.-])config\.[^.]+$/.test(file)
-    && !/(?:^|\/)(?:vite|vitest|eslint|prettier|tailwind|postcss|tsconfig)[^/]*\.[^.]+$/.test(file);
+    && !/\.config\.[^.]+$/.test(file);
 }
 
 function hasJsDoc(node) {
@@ -192,6 +191,9 @@ function runSelfTest() {
     throw new Error("TypeScript JSDoc recognition self-test failed");
   }
   if (!isProductionTypeScriptFile("src/app.tsx")
+    || !isProductionTypeScriptFile("db-config.ts")
+    || !isProductionTypeScriptFile("auth-config.ts")
+    || !isProductionTypeScriptFile("viteProxy.ts")
     || isProductionTypeScriptFile("src/generated.generated.ts")
     || isProductionTypeScriptFile("src/app.config.ts")
     || !excludedDirectoryNames.has("build")
