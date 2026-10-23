@@ -1,3 +1,4 @@
+/** Send a same-origin JSON request and surface server-provided error messages. */
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -24,6 +25,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   return await response.json() as T
 }
 
+/** Extract a useful message from an unknown error value or use the supplied fallback. */
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error) return error.message
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message

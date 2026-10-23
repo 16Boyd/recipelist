@@ -24,6 +24,7 @@ LOCK_DIR=/run/recipelist-lxc
 STOPPED=false
 SERVICE_WAS_ACTIVE=false
 OPERATION_STARTED=false
+# Print supported installer and updater options.
 usage() {
   cat <<'HELP'
 Usage: recipelist-lxc.sh install [--url ORIGIN] [--bind-address ADDRESS] [--trust-proxy true|false]
@@ -52,7 +53,9 @@ down. Migrations may be irreversible: recovery can require manual database
 restore plus compatible code. Back up configuration separately.
 HELP
 }
+# Report a fatal setup error and terminate the installer.
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+# Reject a path whose existing components are symlinks or not root-owned and protected.
 assert_root_path() {
   local path=$1 kind=$2 part current=/ owner_mode
   local -a parts=()
@@ -78,6 +81,7 @@ assert_root_path() {
     fi
   done
 }
+# Verify /usr/local/bin is a safe root-controlled location before trusting its commands.
 assert_safe_local_bin() {
   local entry target
   while IFS= read -r -d '' entry; do
@@ -87,6 +91,7 @@ assert_safe_local_bin() {
     assert_root_path "$target" file
   done < <(find /usr/local/bin -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
 }
+# Check that a candidate unit exactly matches the supported service security configuration.
 validate_service_unit() {
   /usr/bin/python3 - "$1" <<'PY'
 import re
@@ -184,6 +189,7 @@ if values != expected:
     sys.exit("Service unit directives must match the managed RecipeList systemd unit exactly.")
 PY
 }
+# Reject systemd drop-ins that could override the managed RecipeList service.
 assert_no_unit_dropin_files() {
   local unit_paths base dropin_dir dropin
   local -a search_paths=()
@@ -201,12 +207,14 @@ assert_no_unit_dropin_files() {
     done
   done
 }
+# Check both system and transient systemd configuration for service overrides.
 assert_no_unit_dropins() {
   local dropins
   assert_no_unit_dropin_files
   dropins=$(systemctl show --property=DropInPaths --value recipelist.service) || die 'Could not inspect merged RecipeList systemd unit drop-ins.'
   [[ -z "$dropins" ]] || die 'RecipeList systemd drop-ins are unsupported; review the effective unit configuration manually before proceeding.'
 }
+# Remove staged temporary files and restore service state after interruption or failure.
 cleanup() {
   local code=$?
   trap - EXIT
@@ -291,6 +299,7 @@ assert_root_path /usr/local/bin dir
 assert_safe_local_bin
 PATH=/usr/local/bin:$PATH
 export PATH
+# Install required Debian packages when apt is available and package access is configured.
 install_missing_packages() {
   local package
   local -a missing=()
@@ -323,8 +332,11 @@ fi
 exec 9>>"$LOCK_DIR/lock"
 flock -n 9 || die 'Another RecipeList installer/updater is running.'
 cd /
+# Run a PostgreSQL client command as postgres with a controlled environment.
 pg_run() { runuser -u postgres -- /usr/bin/env -i PATH="$PATH" LC_ALL=C "$@"; }
+# Run a fail-fast psql query against the local PostgreSQL server as postgres.
 pg() { pg_run psql -X -h /var/run/postgresql -p 5432 -U postgres -v ON_ERROR_STOP=1 -At "$@"; }
+# Run Git with inherited repository and configuration overrides removed.
 git_safe() {
   env -u GIT_CONFIG_PARAMETERS -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_EXEC_PATH \
@@ -332,8 +344,11 @@ git_safe() {
     GIT_CONFIG_COUNT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 \
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= "$@"
 }
+# Return success when the RecipeList database already exists.
 db_exists() { [[ $(pg -d postgres -c "SELECT 1 FROM pg_database WHERE datname='recipelist'") == 1 ]]; }
+# Return success when the RecipeList PostgreSQL role already exists.
 role_exists() { [[ $(pg -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname='recipelist'") == 1 ]]; }
+# Select and verify pg_dump and pg_restore clients compatible with the running server.
 ensure_pg_dump_compatible() {
   local server_version server_major selected_major client_dump_version client_restore_version dump_major restore_major path candidate
   local exact_found=false
@@ -377,6 +392,7 @@ ensure_pg_dump_compatible() {
   restore_major=${BASH_REMATCH[1]}
   (( dump_major >= server_major && restore_major == dump_major )) || die "Selected PostgreSQL client pair is incompatible with server major $server_major."
 }
+# Restore root ownership and remove group/other write access after a build.
 secure_app() {
   chown -R -P --no-dereference root:root -- "$APP" || return $?
   chmod -R u+rwX -- "$APP" || return $?
@@ -385,6 +401,7 @@ secure_app() {
   chown root:root "$ENV_FILE" || return $?
   chmod 0600 "$ENV_FILE" || return $?
 }
+# Build production assets as the restricted service user, then restore protected checkout permissions.
 build() {
   local build_status=0 app_may_be_writable=false
   assert_root_path /var/cache dir
@@ -422,10 +439,12 @@ build() {
   fi
   return "$build_status"
 }
+# Wait for the service health endpoint and fail with a journal hint if it stays unavailable.
 health() {
   wait_health && { printf 'RecipeList is healthy.\n'; return 0; }
   die 'Health check timed out; inspect journalctl -u recipelist -b.'
 }
+# Poll systemd and the local health endpoint for up to two minutes.
 wait_health() {
   local attempt
   for attempt in {1..60}; do
@@ -436,6 +455,7 @@ wait_health() {
   done
   return 1
 }
+# Create or validate the private postgres-owned directory used for database dumps.
 prepare_backup_directory() {
   local backup_dir=/var/backups/recipelist
   assert_root_path /var/backups dir
@@ -447,6 +467,7 @@ prepare_backup_directory() {
   fi
   [[ -d "$backup_dir" && ! -L "$backup_dir" && $(stat -c '%U:%G:%a' "$backup_dir") == postgres:postgres:700 ]] || die 'Could not create a private PostgreSQL backup directory.'
 }
+# Remove an incomplete dump, attempt to restore prior service availability, and abort the update.
 backup_failure() {
   local reason=$1
   printf 'Backup failed: %s. No checkout or build has occurred.\n' "$reason" >&2
@@ -473,15 +494,18 @@ backup_failure() {
   fi
   die "$reason; update aborted before checkout."
 }
+# Return success only when Node 22 or newer and npm are usable.
 node_supported() {
   command -v node >/dev/null && command -v npm >/dev/null &&
     node -e 'if(Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' &&
     npm --version >/dev/null
 }
+# Require the provisioned Node/npm runtime and print the selected Node version.
 check_node() {
   node_supported || die 'A working Node >=22 and npm are required after runtime provisioning.'
   printf 'Using Node %s.\n' "$(node --version)"
 }
+# Download, verify, stage, and atomically publish the latest supported Node LTS runtime.
 install_node() {
   local arch version archive link
   case "$(dpkg --print-architecture)" in

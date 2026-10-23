@@ -6,6 +6,7 @@ import { authOptions } from './auth.js'
 import { pool } from './db.js'
 import { appMigrations, applyAppMigrations, assertSafeMigrationPlan } from './migration-operations.js'
 
+/** Run Better Auth schema migrations followed by the application SQL migrations. */
 async function migrate() {
   const plan = await getMigrations(authOptions)
   assertSafeMigrationPlan(plan)

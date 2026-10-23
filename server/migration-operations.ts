@@ -1,5 +1,6 @@
 export type MigrationPlanSafety = { schemaProblems: string[]; unsafeChanges: string[] }
 
+/** Reject Better Auth migration plans containing schema problems or unsafe changes. */
 export function assertSafeMigrationPlan(plan: MigrationPlanSafety): void {
   if (plan.schemaProblems.length) throw new Error(`Better Auth schema problems: ${plan.schemaProblems.join('; ')}`)
   if (plan.unsafeChanges.length) throw new Error(`Unsafe Better Auth schema changes: ${plan.unsafeChanges.join('; ')}`)
@@ -16,6 +17,7 @@ type MigrationClient = {
   release(): void
 }
 
+/** Apply unapplied SQL migrations in one transaction and always release the database client. */
 export async function applyAppMigrations(
   client: MigrationClient,
   migrations: AppMigration[],

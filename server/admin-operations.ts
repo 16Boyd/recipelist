@@ -1,7 +1,9 @@
+/** Check that an input is a non-empty email-shaped string. */
 export function validateAdminEmail(value: unknown): value is string {
   return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
 }
 
+/** Promote the matching existing RecipeList account and return its stored email address. */
 export async function promoteAdmin(
   query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<{ email: string }>; rowCount: number | null }>,
   input: unknown,

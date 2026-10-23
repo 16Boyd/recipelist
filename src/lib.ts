@@ -1,5 +1,6 @@
 import type { AppData, Ingredient, Recipe, RecipeMatch, ShoppingItem } from './types'
 
+/** Normalize ingredient text for case-insensitive matching, including common plural forms. */
 export function normalizeName(value: string): string {
   return value
     .trim()
@@ -54,6 +55,7 @@ const proteinFormTerms = new Set([
   'fresh', 'frozen', 'raw', 'cooked',
 ])
 
+/** Return an animal-protein family only when the ingredient names one unambiguous protein and no product terms. */
 function proteinFamily(value: string): string | undefined {
   const words = normalizeName(value).split(' ')
   if (words.some((word) => nonProteinProductTerms.has(word))) return undefined
@@ -78,6 +80,7 @@ export function ingredientNamesEquivalent(first: string, second: string): boolea
   return Boolean(firstFamily && firstFamily === proteinFamily(normalizedSecond))
 }
 
+/** Check that an unknown value contains the required recipe fields and non-empty ingredients. */
 function validRecipe(value: unknown): value is Recipe {
   if (!value || typeof value !== 'object') return false
   const recipe = value as Partial<Recipe>
@@ -97,9 +100,11 @@ function validRecipe(value: unknown): value is Recipe {
       && typeof item.amount === 'string')
 }
 
+/** Validate persisted kitchen data and return its typed form, rejecting incomplete or malformed records. */
 export function parseAppData(value: unknown): AppData {
   if (!value || typeof value !== 'object') throw new Error('Your saved kitchen data has an invalid format.')
   const candidate = value as Partial<AppData>
+  /** Check the fields required for one persisted shopping-list item. */
   const validShoppingItem = (item: unknown): item is ShoppingItem => Boolean(item)
     && typeof item === 'object'
     && typeof (item as ShoppingItem).id === 'string'
@@ -113,6 +118,7 @@ export function parseAppData(value: unknown): AppData {
   return { recipes: candidate.recipes, pantry: candidate.pantry, shopping: candidate.shopping }
 }
 
+/** Rank recipes by the proportion of ingredients available in the pantry, then by missing items and cook time. */
 export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[] {
   return recipes.map((recipe) => {
     const available: Ingredient[] = []
@@ -126,6 +132,7 @@ export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[]
   }).sort((a, b) => b.percent - a.percent || a.missing.length - b.missing.length || a.recipe.time - b.recipe.time)
 }
 
+/** Create a personal recipe with normalized defaults and a newly generated ID. */
 export function makeRecipe(title: string, source: string, category: string, time: number, servings: number, ingredients: Ingredient[]): Recipe {
   return {
     id: `recipe-${crypto.randomUUID()}`,
@@ -140,6 +147,7 @@ export function makeRecipe(title: string, source: string, category: string, time
   }
 }
 
+/** Generate a UUID-backed identifier with the requested record prefix. */
 export function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
 }
