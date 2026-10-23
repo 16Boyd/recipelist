@@ -5,6 +5,7 @@ import { PostgresDialect } from 'kysely'
 import { pool } from './db.js'
 import { isFactorVerificationPath, isPasswordCreationPath, meetsPasswordPolicy, passwordFromRequest, requestsTrustedDevice } from './auth-policy.js'
 
+/** Record that this session completed MFA for the user’s current MFA enrollment. */
 async function recordMfaAssurance(sessionId: string, userId: string) {
   await pool.query(
     `INSERT INTO user_mfa_sessions(session_id, user_id, mfa_enabled_at, verified_at)

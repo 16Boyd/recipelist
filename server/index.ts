@@ -21,6 +21,7 @@ const app = createServerApp({
 
 const server = app.listen(port, host, () => console.info(`RecipeList listening on ${host}:${port}`))
 
+/** Close the HTTP listener and drain PostgreSQL connections during process shutdown. */
 async function shutdown() {
   server.close()
   await pool.end()

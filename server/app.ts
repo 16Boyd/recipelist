@@ -27,6 +27,7 @@ export type ServerAppOptions = {
 
 type AuthedRequest = Request & { recipeListSession?: ServerSession; recipeListRole?: 'member' | 'admin' }
 
+/** Configure the API, authentication, security middleware, and optional production static hosting. */
 export function createServerApp(options: ServerAppOptions) {
   const { pool } = options
   const baseURL = new URL(options.baseURL)
@@ -57,6 +58,7 @@ export function createServerApp(options: ServerAppOptions) {
   app.all('/api/auth/*splat', options.authHandler)
   app.use(express.json({ limit: '1mb', strict: true, type: 'application/json' }))
 
+  /** Require JSON requests from the configured origin before state-changing API routes. */
   function rejectOriginAndContentType(req: Request, res: Response, next: NextFunction) {
     const contentType = req.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
     if (contentType !== 'application/json') return res.status(415).json({ error: 'Expected application/json' })
@@ -72,6 +74,7 @@ export function createServerApp(options: ServerAppOptions) {
     next()
   }
 
+  /** Resolve the request session and load its configured application role. */
   async function loadSession(req: AuthedRequest, res: Response, next: NextFunction) {
     try {
       const session = await options.getSession(req.headers)
@@ -86,6 +89,7 @@ export function createServerApp(options: ServerAppOptions) {
     } catch (error) { next(error) }
   }
 
+  /** Require a session assurance record matching the user’s current MFA enrollment. */
   async function requireFreshMfa(req: AuthedRequest, res: Response, next: NextFunction) {
     const session = req.recipeListSession!
     try {

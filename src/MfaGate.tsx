@@ -5,6 +5,7 @@ import { authClient } from './authClient'
 
 type Enrollment = { totpURI: string; qrCode: string; backupCodes: string[] }
 
+/** Render required authenticator enrollment, backup-code acknowledgement, and verification. */
 export default function MfaGate({ userId, email, onSetupComplete, onSignOut, signingOut, accountError }: {
   userId: string
   email: string
@@ -28,6 +29,7 @@ export default function MfaGate({ userId, email, onSetupComplete, onSignOut, sig
     setBackupCodesSaved(false)
   }, [userId])
 
+  /** Enable TOTP for the account and prepare its QR code and backup codes for display. */
   async function beginEnrollment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setBusy(true)
@@ -50,6 +52,7 @@ export default function MfaGate({ userId, email, onSetupComplete, onSignOut, sig
     }
   }
 
+  /** Verify a six-digit TOTP code and confirm the setup with the server. */
   async function verifyCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!/^\d{6}$/.test(code)) {

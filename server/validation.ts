@@ -16,14 +16,17 @@ export type AppDataInput = {
   shopping: { id: string; name: string; checked: boolean }[]
 }
 
+/** Narrow an unknown JSON value to a non-null, non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Check that a value is a string within the configured length limit. */
 function isText(value: unknown, max = 500): value is string {
   return typeof value === 'string' && value.length <= max
 }
 
+/** Validate untrusted recipe JSON against field, length, range, and ingredient limits. */
 export function validateRecipe(value: unknown): value is RecipeInput {
   if (!isRecord(value)) return false
   return isText(value.id, 120) && value.id.length > 0
@@ -40,6 +43,7 @@ export function validateRecipe(value: unknown): value is RecipeInput {
       && isText(ingredient.amount, 120))
 }
 
+/** Validate untrusted profile JSON and enforce limits on recipes, pantry, and shopping entries. */
 export function validateAppData(value: unknown): value is AppDataInput {
   if (!isRecord(value) || !Array.isArray(value.recipes) || !Array.isArray(value.pantry) || !Array.isArray(value.shopping)) return false
   return value.recipes.length <= 1000 && value.recipes.every(validateRecipe)

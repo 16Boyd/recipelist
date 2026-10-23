@@ -17,6 +17,7 @@ const sectionLabels: Record<Section, string> = {
   shopping: 'Shopping list',
 }
 
+/** Render one of the application’s small inline SVG navigation and action icons. */
 function Icon({ name, size = 20 }: { name: 'sparkle' | 'book' | 'basket' | 'bag' | 'search' | 'plus' | 'arrow' | 'clock' | 'users' | 'close' | 'check' | 'trash' | 'leaf' | 'chef' | 'chevron'; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true as const }
   const paths: Record<string, ReactNode> = {
@@ -44,6 +45,7 @@ type SaveStatus = 'saved' | 'saving' | 'error'
 type SecurityStatus = 'checking' | 'setup' | 'verified' | 'error'
 type CurrentUser = { user: AuthUser & { twoFactorEnabled: boolean }; role: UserRole; needsMfaReauthentication: boolean }
 
+/** Load account security and kitchen data, coordinate saves, and render the active application view. */
 function App() {
   const { data: session, isPending: sessionPending } = authClient.useSession()
   const user = session?.user ? session.user as AuthUser : null
@@ -204,6 +206,7 @@ function App() {
     return flush
   }
 
+  /** Apply a profile edit and queue a debounced save for the active account. */
   function updateProfileData(update: (current: AppData) => AppData) {
     const current = profileSnapshot.current.data
     if (!current || profileSnapshot.current.securityStatus !== 'verified' || signingOutRef.current) return
@@ -215,6 +218,7 @@ function App() {
     setProfileError('')
   }
 
+  /** Sign out after attempting to preserve verified pending kitchen edits. */
   async function signOut() {
     if (signingOutRef.current) return
     signingOutRef.current = true
@@ -242,6 +246,7 @@ function App() {
     }
   }
 
+  /** Retry loading the current account security state. */
   function retrySecurity() {
     securityRequest.current += 1
     handledReauthUser.current = null
@@ -260,10 +265,12 @@ function App() {
   return <KitchenApp user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
 }
 
+/** Render a loading or error state with an optional retry action. */
 function StatusScreen({ title, message, onRetry }: { title: string; message?: string; onRetry?: () => void }) {
   return <main className="auth-screen"><section className="auth-card status-card"><div className="auth-brand"><span className="brand-mark">✦</span><span>recipe<span className="brand-light">list</span></span></div><h1>{title}</h1>{message && <p className="auth-intro" role={onRetry ? 'alert' : undefined}>{message}</p>}{onRetry && <button className="button button-dark auth-submit" onClick={onRetry}>Try again</button>}</section></main>
 }
 
+/** Render the kitchen navigation and active discovery, recipe, pantry, or shopping view. */
 function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountError, signingOut, onRetrySave, onSignOut }: { user: AuthUser; data: AppData; onDataChange: (update: (current: AppData) => AppData) => void; saveStatus: SaveStatus; saveError: string; accountError: string; signingOut: boolean; onRetrySave: () => void; onSignOut: () => void }) {
   const [section, setSection] = useState<Section>('discover')
   const [query, setQuery] = useState('')
@@ -312,6 +319,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     return () => window.clearTimeout(timeout)
   }, [toast])
   useEffect(() => {
+    /** Focus the search field when the user presses the supported keyboard shortcut. */
     function focusSearch(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 'k' || showRecipeForm || selectedRecipe) return
       event.preventDefault()
@@ -339,10 +347,12 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   const bestMatches = matches.slice(0, 3)
   const dateLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toLocaleUpperCase()
 
+  /** Apply one kitchen-data update through the parent change handler. */
   function updateData(update: (current: AppData) => AppData) {
     onDataChange(update)
   }
 
+  /** Validate and append a new pantry entry unless an equivalent item already exists. */
   function addPantryItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const value = pantryEntry.trim()
@@ -356,10 +366,12 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     setPantryEntry('')
   }
 
+  /** Remove the selected pantry entry. */
   function removePantryItem(value: string) {
     updateData((current) => ({ ...current, pantry: current.pantry.filter((item) => item !== value) }))
   }
 
+  /** Add unique normalized ingredient names to the shopping list. */
   function addShoppingItems(values: string[]) {
     const known = new Set(data.shopping.map((item) => normalizeName(item.name)))
     const unique: string[] = []
@@ -386,6 +398,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     return unique.length
   }
 
+  /** Submit the shopping-list text field as a new entry. */
   function addShoppingEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!shoppingEntry.trim()) return
@@ -393,6 +406,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     setShoppingEntry('')
   }
 
+  /** Add a recipe match’s missing ingredients to the shopping list. */
   function addMissing(match: RecipeMatch) {
     if (match.missing.length === 0) {
       setToast('Everything for this recipe is in your pantry')
@@ -402,20 +416,24 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     setToast(added ? `${added} ${added === 1 ? 'item' : 'items'} added to your shopping list` : 'Those ingredients are already on your list')
   }
 
+  /** Toggle the checked state of one shopping-list entry. */
   function toggleShoppingItem(id: string) {
     updateData((current) => ({ ...current, shopping: current.shopping.map((item) => item.id === id ? { ...item, checked: !item.checked } : item) }))
   }
 
+  /** Remove checked entries from the shopping list. */
   function clearChecked() {
     updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => !item.checked) }))
   }
 
+  /** Add a recipe to the personal recipe collection. */
   function saveRecipe(recipe: Recipe) {
     updateData((current) => ({ ...current, recipes: [recipe, ...current.recipes] }))
     setShowRecipeForm(false)
     setToast('Recipe added to your library')
   }
 
+  /** Submit an admin-approved recipe to the shared catalog and refresh the list. */
   async function saveSharedRecipe(recipe: Recipe) {
     if (role !== 'admin' || roleUserId !== user.id || roleError || catalogSaving) throw new Error('Admin access could not be verified.')
     setCatalogSaving(true)
@@ -433,6 +451,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     }
   }
 
+  /** Add ingredients from the selected recipe that are not already in the pantry. */
   function addRecipeIngredientsToPantry(recipe: Recipe) {
     const known = new Set(data.pantry.map(normalizeName))
     const newItems = recipe.ingredients.map((ingredient) => ingredient.name.trim()).filter((name) => {
@@ -549,6 +568,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   )
 }
 
+/** Choose the page description for the active kitchen section and recipe count. */
 function pageDescription(section: Section, recipeCount: number) {
   if (section === 'recipes') return `${recipeCount} recipes from your favorite meal kits and your own kitchen.`
   if (section === 'pantry') return 'Keep track of what’s on hand and find recipes that fit.'
@@ -556,6 +576,7 @@ function pageDescription(section: Section, recipeCount: number) {
   return ''
 }
 
+/** Render ranked recipe matches and discovery actions. */
 function DiscoverView({ matches, pantryCount, recipeCount, cookableCount, query, filteredMatches, bestMatches, onOpen, onAddMissing, onShowRecipes, onShowPantry }: {
   matches: RecipeMatch[]; pantryCount: number; recipeCount: number; cookableCount: number; query: string; filteredMatches: RecipeMatch[]; bestMatches: RecipeMatch[];
   onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void; onShowRecipes: () => void; onShowPantry: () => void;
@@ -612,10 +633,12 @@ function DiscoverView({ matches, pantryCount, recipeCount, cookableCount, query,
   </>
 }
 
+/** Render one compact labeled statistic card. */
 function StatCard({ icon, label, value, suffix, tone }: { icon: 'book' | 'basket' | 'chef'; label: string; value: string; suffix: string; tone: string }) {
   return <div className="stat-card"><span className={`stat-icon ${tone}`}><Icon name={icon} size={19} /></span><div className="stat-main"><span>{label}</span><div><strong>{value}</strong><small>{suffix}</small></div></div><span className="stat-spark">↗</span></div>
 }
 
+/** Render recipe search and filtering controls with the matching recipe grid. */
 function RecipesView({ matches, total, query, onlyCookable, onToggleCookable, onOpen, onAddMissing, onAddRecipe }: {
   matches: RecipeMatch[]; total: number; query: string; onlyCookable: boolean; onToggleCookable: () => void; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void; onAddRecipe: () => void;
 }) {
@@ -627,10 +650,12 @@ function RecipesView({ matches, total, query, onlyCookable, onToggleCookable, on
   </section>
 }
 
+/** Render the collection of recipe cards for the current filtered results. */
 function RecipeGrid({ matches, onOpen, onAddMissing }: { matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void }) {
   return <div className="recipe-grid">{matches.map((match) => <RecipeCard key={match.recipe.id} match={match} onOpen={onOpen} onAddMissing={onAddMissing} />)}</div>
 }
 
+/** Render one recipe summary and its available cooking actions. */
 function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void }) {
   const { recipe, percent, missing } = match
   return <article className="recipe-card">
@@ -648,6 +673,7 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
   </article>
 }
 
+/** Render pantry editing and recipe discovery actions. */
 function PantryView({ pantry, entry, onEntryChange, onSubmit, onRemove, matches, onOpen, onAddMissing }: {
   pantry: string[]; entry: string; onEntryChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (value: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
@@ -670,6 +696,7 @@ function PantryView({ pantry, entry, onEntryChange, onSubmit, onRemove, matches,
   </div>
 }
 
+/** Render the shopping list and its completion controls. */
 function ShoppingView({ items, entry, onEntryChange, onSubmit, onToggle, onRemove, onClearChecked }: {
   items: AppData['shopping']; entry: string; onEntryChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onToggle: (id: string) => void; onRemove: (id: string) => void; onClearChecked: () => void;
 }) {
@@ -694,10 +721,12 @@ function ShoppingView({ items, entry, onEntryChange, onSubmit, onToggle, onRemov
   </section>
 }
 
+/** Render one shopping-list item with toggle and remove actions. */
 function ShoppingRow({ item, onToggle, onRemove }: { item: AppData['shopping'][number]; onToggle: (id: string) => void; onRemove: (id: string) => void }) {
   return <li className={`shopping-row ${item.checked ? 'checked' : ''}`}><button className="check-button" onClick={() => onToggle(item.id)} aria-label={item.checked ? `Mark ${item.name} as not picked up` : `Mark ${item.name} as picked up`}><Icon name="check" size={14} /></button><span className="shopping-name">{item.name}</span><button className="remove-shopping" onClick={() => onRemove(item.id)} aria-label={`Remove ${item.name} from list`}><Icon name="trash" size={16} /></button></li>
 }
 
+/** Render the form for saving a personal or shared recipe. */
 function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { onClose: () => void; onSave: (recipe: Recipe) => void; onSaveShared: (recipe: Recipe) => Promise<void>; isAdmin: boolean; savingShared: boolean }) {
   const [title, setTitle] = useState('')
   const [source, setSource] = useState('')
@@ -708,6 +737,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
   const [destination, setDestination] = useState<'personal' | 'shared'>('personal')
   const [error, setError] = useState('')
 
+  /** Validate recipe form fields and save the recipe to the selected destination. */
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const ingredients: Ingredient[] = ingredientsText.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
@@ -738,6 +768,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
   </Modal>
 }
 
+/** Render a recipe’s ingredients and actions for missing items or pantry updates. */
 function RecipeDetails({ recipe, match, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; match?: RecipeMatch; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
   return <Modal onClose={onClose} title={recipe.title} description={`${recipe.source} · ${recipe.time} minutes · ${recipe.servings} servings`} wide>
     <div className="detail-image" style={{ backgroundImage: `linear-gradient(180deg, transparent, rgba(24, 37, 29, .28)), url("${recipe.image}")` }}><span className="source-pill">{recipe.source}</span><span className="detail-category">{recipe.category}</span></div>
@@ -752,14 +783,17 @@ function RecipeDetails({ recipe, match, onClose, onAddMissing, onAddIngredients 
   </Modal>
 }
 
+/** Render an accessible dialog with Escape handling and focus containment. */
 function Modal({ onClose, title, description, children, wide = false }: { onClose: () => void; title: string; description: string; children: ReactNode; wide?: boolean }) {
   const dialogRef = useRef<HTMLElement>(null)
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = dialogRef.current
+    /** Select dialog controls eligible for keyboard focus. */
     const getFocusable = () => dialog?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? []
     const focusables = getFocusable()
     ;(dialog?.querySelector<HTMLElement>('[autofocus]') ?? focusables[0] ?? dialog)?.focus()
+    /** Handle Escape dismissal and cycle Tab focus within the dialog. */
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         onClose()

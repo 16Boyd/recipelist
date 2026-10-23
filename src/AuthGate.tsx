@@ -2,9 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { authClient } from './authClient'
 import { errorMessage } from './api'
 
+/** Apply the sign-up password length and character-class requirements in the client form. */
 const meetsPasswordPolicy = (password: string) =>
   password.length <= 128 && /^(?=.*\p{Ll})(?=.*\p{Lu})(?=.*\p{N})(?=.*[^\p{L}\p{N}]).{12,128}$/u.test(password)
 
+/** Render sign-in, account creation, and TOTP or backup-code verification flows. */
 export default function AuthGate({ notice = '' }: { notice?: string }) {
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in')
   const [challenge, setChallenge] = useState(false)
@@ -16,6 +18,7 @@ export default function AuthGate({ notice = '' }: { notice?: string }) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
 
+  /** Validate credentials and run the selected sign-in or sign-up request. */
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (mode === 'sign-up' && !meetsPasswordPolicy(password)) {
@@ -46,6 +49,7 @@ export default function AuthGate({ notice = '' }: { notice?: string }) {
     }
   }
 
+  /** Validate and submit the selected authenticator or one-time backup code. */
   async function verifySecondFactor(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (challengeMethod === 'totp') {
@@ -76,6 +80,7 @@ export default function AuthGate({ notice = '' }: { notice?: string }) {
     }
   }
 
+  /** Switch between sign-in and sign-up and clear the current challenge message. */
   function switchMode() {
     setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in')
     setChallenge(false)
