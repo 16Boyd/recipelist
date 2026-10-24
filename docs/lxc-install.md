@@ -57,6 +57,8 @@ sudo journalctl -u recipelist -b
 
 The health endpoint should return `{"status":"ok"}`. The service runs database migrations before starting the app. If startup fails with systemd status `226/NAMESPACE`, inspect the journal and the host LXC/AppArmor policy for a denied namespace operation.
 
+The app migration set keeps its Better Auth user and session references as PostgreSQL `uuid` columns. On an existing installation, migration `0003_auth_foreign_keys_uuid` converts the earlier text columns after checking that values are valid UUIDs and point to existing auth rows. A malformed or orphaned value stops startup with a diagnostic; inspect the database and take a backup before correcting the row and restarting. Recipe identifiers remain text. PostgreSQL integration coverage is opt-in: run `TEST_DATABASE_URL=... npm test -- tests/server/migrations.postgres.test.ts` against a dedicated disposable database, because the test recreates its `public` schema.
+
 For failures after the service unit exists, inspect `sudo systemctl status recipelist` and `sudo journalctl -u recipelist -b` before attempting recovery. Preserve the configuration and any database backup; migrations do not roll back automatically.
 
 ## Update an existing install
