@@ -87,6 +87,48 @@ describe('recipe matching and construction', () => {
     expect(matchRecipes([row], [{ name: 'rice', amount: '' }])[0]?.available).toContain(row.ingredients[0])
     expect(matchRecipes([recipe('unknown-unit', 'Unknown unit', [{ name: 'rice', amount: '2 scoops' }])], [{ name: 'rice', amount: '1 cup' }])[0]?.available).toHaveLength(1)
   })
+  it('compares unknown units by normalized unit name and quantity', () => {
+    const row = recipe('unknown-unit-quantity', 'Unknown unit quantity', [{ name: 'tofu', amount: '2 blocks' }])
+    expect(matchRecipes([row], [{ name: 'tofu', amount: '2 block' }])[0]?.available).toEqual(row.ingredients)
+    expect(matchRecipes([row], [{ name: 'tofu', amount: '1 block' }])[0]?.missing).toEqual(row.ingredients)
+  })
+  it('pools equivalent pantry entries and consumes pooled stock across repeated requirements', () => {
+    const pooledSubstitutions = recipe('pooled-substitutions', 'Poultry', [{ name: 'chicken', amount: '2 lb' }])
+    expect(matchRecipes([pooledSubstitutions], [
+      { name: 'chicken', amount: '1 lb' }, { name: 'turkey', amount: '1 lb' },
+    ])[0]?.available).toEqual(pooledSubstitutions.ingredients)
+
+    const repeated = recipe('pooled-repeated', 'Rice', [{ name: 'rice', amount: '2 cups' }, { name: 'rice', amount: '2 cups' }])
+    expect(matchRecipes([repeated], [{ name: 'rice', amount: '3 cups' }, { name: 'rice', amount: '1 cup' }])[0]?.available).toEqual(repeated.ingredients)
+    expect(matchRecipes([repeated], [{ name: 'rice', amount: '3 cups' }])[0]?.missing).toEqual([repeated.ingredients[1]])
+
+    const dimensionMismatch = recipe('dimension-mismatch', 'Rice', [{ name: 'rice', amount: '2 cups' }])
+    expect(matchRecipes([dimensionMismatch], [{ name: 'rice', amount: '2 oz' }])[0]?.missing).toEqual(dimensionMismatch.ingredients)
+  })
+  it('tolerates conversion rounding without treating short comparable stock as enough', () => {
+    const tablespoon = recipe('rounding-tbsp', 'Oil', [{ name: 'oil', amount: '1 tbsp' }])
+    expect(matchRecipes([tablespoon], [{ name: 'oil', amount: '3 tsp' }])[0]?.available).toEqual(tablespoon.ingredients)
+
+    const cup = recipe('rounding-cup', 'Rice', [{ name: 'rice', amount: '1 cup' }])
+    expect(matchRecipes([cup], [
+      { name: 'rice', amount: '1/3 cup' }, { name: 'rice', amount: '1/3 cup' }, { name: 'rice', amount: '1/3 cup' },
+    ])[0]?.available).toEqual(cup.ingredients)
+    expect(matchRecipes([cup], [{ name: 'rice', amount: '0.99 cup' }])[0]?.missing).toEqual(cup.ingredients)
+  })
+  it('uses name-presence fallback only when there are no comparable pantry quantities', () => {
+    const tofu = recipe('tofu-mixed-units', 'Tofu', [{ name: 'tofu', amount: '2 blocks' }])
+    expect(matchRecipes([tofu], [
+      { name: 'tofu', amount: '1 block' }, { name: 'tofu', amount: '1 cup' },
+    ])[0]?.missing).toEqual(tofu.ingredients)
+  })
+  it('pools quantities only across names equivalent to the current ingredient', () => {
+    const row = recipe('separate-ingredients', 'Rice and oil', [
+      { name: 'rice', amount: '2 cups' }, { name: 'oil', amount: '2 cups' },
+    ])
+    expect(matchRecipes([row], [
+      { name: 'rice', amount: '2 cups' }, { name: 'oil', amount: '2 cups' },
+    ])[0]?.available).toEqual(row.ingredients)
+  })
   it('does not reuse the same pantry quantity for repeated recipe ingredients', () => {
     const row = recipe('repeat-qty', 'Repeated rice', [{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '1 cup' }])
     const result = matchRecipes([row], [{ name: 'rice', amount: '1 cup' }])[0]!

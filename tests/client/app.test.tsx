@@ -100,6 +100,25 @@ describe('application session and profile flow', () => {
 })
 
 describe('pantry, recipes, and shopping list flows', () => {
+  it('updates only the selected duplicate pantry row amount', async () => {
+    const user = userEvent.setup()
+    await mountReady({ ...userData(), pantry: [{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '3 cups' }] }, [])
+    await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
+    const amounts = screen.getAllByLabelText('rice amount on hand')
+    expect(amounts).toHaveLength(2)
+    await user.clear(amounts[1]!)
+    await user.type(amounts[1]!, '4 cups')
+    await waitFor(() => {
+      const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData | undefined
+      expect(saved?.pantry).toEqual([{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '4 cups' }])
+    })
+    await user.click(screen.getAllByRole('button', { name: 'Remove rice from pantry' })[0]!)
+    await waitFor(() => {
+      const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData | undefined
+      expect(saved?.pantry).toEqual([{ name: 'rice', amount: '4 cups' }])
+    })
+  })
+
   it('adds and removes pantry items and prevents normalized duplicates', async () => {
     const user = userEvent.setup()
     await mountReady()

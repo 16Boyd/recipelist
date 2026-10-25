@@ -10,6 +10,7 @@ import type { AppData, Ingredient, PantryItem, Recipe, RecipeMatch, UserRole } f
 
 type Section = 'discover' | 'recipes' | 'pantry' | 'shopping'
 
+/** Build a sorted list of unique ingredient names used by the recipe collection. */
 function getRecipeIngredientCatalog(recipes: Recipe[]): string[] {
   const catalog = new Map<string, string>()
   for (const recipe of recipes) {
@@ -379,15 +380,17 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     setPantryAmount('')
   }
 
-  /** Remove the selected pantry entry. */
-  function removePantryItem(value: string) {
-    updateData((current) => ({ ...current, pantry: current.pantry.filter((item) => item.name !== value) }))
+  /** Remove one pantry row, preserving any legacy rows with the same name. */
+  function removePantryItem(index: number) {
+    updateData((current) => ({ ...current, pantry: current.pantry.filter((_, rowIndex) => rowIndex !== index) }))
   }
 
-  function updatePantryAmount(name: string, amount: string) {
-    updateData((current) => ({ ...current, pantry: current.pantry.map((item) => item.name === name ? { ...item, amount } : item) }))
+  /** Update the amount for one pantry row, including legacy duplicate names. */
+  function updatePantryAmount(index: number, amount: string) {
+    updateData((current) => ({ ...current, pantry: current.pantry.map((item, rowIndex) => rowIndex === index ? { ...item, amount } : item) }))
   }
 
+  /** Add a recipe ingredient unless an equivalent name is already tracked. */
   function addCatalogIngredient(name: string) {
     if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(name))) return
     updateData((current) => ({ ...current, pantry: [...current.pantry, { name, amount: '' }].sort((a, b) => a.name.localeCompare(b.name)) }))
@@ -698,14 +701,14 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
 
 /** Render pantry editing and recipe discovery actions. */
 function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountChange, onSubmit, onRemove, onAmountUpdate, onAddCatalog, matches, onOpen, onAddMissing }: {
-  pantry: PantryItem[]; catalog: string[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (value: string) => void; onAmountUpdate: (name: string, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
+  pantry: PantryItem[]; catalog: string[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (index: number) => void; onAmountUpdate: (index: number, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
   const cookable = matches.filter((match) => match.missing.length === 0)
   return <div className="pantry-layout">
     <section className="surface-card pantry-card">
       <div className="surface-heading"><div><div className="section-kicker">WHAT’S ON HAND</div><h2>Your ingredients <span className="pill-count">{pantry.length}</span></h2><p>Add the ingredients you have. We’ll match them to your recipes.</p></div><span className="surface-illustration"><Icon name="basket" size={23} /></span></div>
       <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
-      {pantry.length ? <ul className="pantry-items">{pantry.map((item) => <li key={item.name}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={`pantry-qty-${normalizeName(item.name).replace(/\s/g, '-')}`}>{item.name} amount on hand</label><input id={`pantry-qty-${normalizeName(item.name).replace(/\s/g, '-')}`} aria-label={`${item.name} amount on hand`} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(item.name, event.target.value)} /><button onClick={() => onRemove(item.name)} aria-label={`Remove ${item.name} from pantry`}><Icon name="close" size={13} /></button></li>)}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      {pantry.length ? <ul className="pantry-items">{pantry.map((item, index) => { const inputId = `pantry-qty-${index}-${normalizeName(item.name).replace(/\s/g, '-')}`; return <li key={`${item.name}-${index}`}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={inputId}>{item.name} amount on hand</label><input id={inputId} aria-label={`${item.name} amount on hand`} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(index, event.target.value)} /><button onClick={() => onRemove(index)} aria-label={`Remove ${item.name} from pantry`}><Icon name="close" size={13} /></button></li> })}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
       <div className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</div><ul className="pantry-catalog">{catalog.map((name) => { const tracked = pantry.find((item) => normalizeName(item.name) === normalizeName(name)); return <li key={name}><span>{name}</span>{tracked ? <span className="muted">Tracked{tracked.amount ? ` · ${tracked.amount}` : ''}</span> : <button className="text-button" onClick={() => onAddCatalog(name)}>Add to pantry <Icon name="plus" size={14} /></button>}</li> })}</ul>
       <div className="pantry-footnote"><Icon name="leaf" size={15} /> Ingredient names are matched flexibly, regardless of capitalization.</div>
     </section>

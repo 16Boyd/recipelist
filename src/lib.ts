@@ -124,7 +124,7 @@ export function parseAppData(value: unknown): AppData {
   }
 }
 
-/** Rank recipes by the proportion of ingredients available in the pantry, then by missing items and cook time. */
+/** Parse a quantity into a comparable base-unit value, retaining normalized unknown units. */
 function parseQuantity(value: string): { value: number; dimension: string } | undefined {
   const fractions: Record<string, string> = { '½': '1/2', '¼': '1/4', '¾': '3/4', '⅓': '1/3', '⅔': '2/3' }
   const normalized = value.trim().toLocaleLowerCase().replace(/[½¼¾⅓⅔]/g, (fraction) => ` ${fractions[fraction]}`).trim()
@@ -163,35 +163,50 @@ function parseQuantity(value: string): { value: number; dimension: string } | un
     bunch: ['count:bunch', 1], ear: ['count:ear', 1], bulb: ['count:bulb', 1], sheet: ['count:sheet', 1], leaf: ['count:leaf', 1],
   }
   const conversion = units[unit]
-  if (!conversion) return undefined
+  if (!conversion) return { value: count, dimension: `unknown:${unit}` }
   const converted = count * conversion[1]
   return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
 }
 
+/** Rank recipes by pantry coverage while pooling and consuming measurable stock safely. */
 export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
   return recipes.map((recipe) => {
     const available: Ingredient[] = []
     const missing: Ingredient[] = []
-    const usedAmounts = new Map<number, number>()
+    const remainingAmounts = pantry.map((item) => parseQuantity(item.amount)?.value)
     recipe.ingredients.forEach((ingredient) => {
       const required = parseQuantity(ingredient.amount)
-      let matchedIndex = -1
-      pantry.some((item, index) => {
-        if (!ingredientNamesEquivalent(ingredient.name, item.name)) return false
-        const have = parseQuantity(item.amount)
-        if (!have || !required) {
-          matchedIndex = index
-          return true
+      const equivalent = pantry.map((item, index) => ({ item, index, quantity: parseQuantity(item.amount) }))
+        .filter(({ item }) => ingredientNamesEquivalent(ingredient.name, item.name))
+      if (!equivalent.length) {
+        missing.push(ingredient)
+        return
+      }
+      if (!required) {
+        available.push(ingredient)
+        return
+      }
+
+      const comparable = equivalent.filter(({ quantity }) => quantity?.dimension === required.dimension)
+      const total = comparable.reduce((sum, { index }) => sum + (remainingAmounts[index] ?? 0), 0)
+      const tolerance = Math.max(total, required.value) * 1e-5
+      if (total + tolerance >= required.value) {
+        let needed = required.value
+        for (const { index } of comparable) {
+          const remaining = remainingAmounts[index] ?? 0
+          const consumed = Math.min(remaining, needed)
+          remainingAmounts[index] = Math.max(0, remaining - consumed)
+          needed -= consumed
+          if (needed <= 0) break
         }
-        if (have.dimension !== required.dimension) return false
-        const used = usedAmounts.get(index) ?? 0
-        if (have.value - used < required.value) return false
-        usedAmounts.set(index, used + required.value)
-        matchedIndex = index
-        return true
-      })
-      if (matchedIndex >= 0) available.push(ingredient)
-      else missing.push(ingredient)
+        available.push(ingredient)
+      } else if (!comparable.length && equivalent.some(({ quantity }) => !quantity
+        || quantity?.dimension.startsWith('unknown:') || required.dimension.startsWith('unknown:'))) {
+        // Preserve legacy name-presence matching when pantry and recipe units cannot be compared.
+        available.push(ingredient)
+      } else {
+        missing.push(ingredient)
+      }
     })
     const percent = recipe.ingredients.length ? Math.round((available.length / recipe.ingredients.length) * 100) : 0
     return { recipe, available, missing, percent }
