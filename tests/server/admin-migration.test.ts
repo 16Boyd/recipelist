@@ -9,6 +9,7 @@ describe('migration operations', () => {
     expect(appMigrations.map(({ version }) => version)).toEqual([
       '0001_app_data_and_recipe_catalog',
       '0002_mfa_session_assurance',
+      '0003_auth_foreign_keys_uuid',
     ])
     const [appSchema, mfaSchema] = await Promise.all(appMigrations.map(({ file }) =>
       readFile(resolve(process.cwd(), 'server/migrations', file), 'utf8'),
@@ -17,8 +18,18 @@ describe('migration operations', () => {
     expect(appSchema).toContain('app_data jsonb NOT NULL')
     expect(appSchema).toContain('time integer NOT NULL CHECK (time BETWEEN 1 AND 1440)')
     expect(appSchema).toContain('CHECK (jsonb_typeof(ingredients) = \'array\')')
+    expect(appSchema).toContain('user_id uuid PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE')
+    expect(appSchema).toContain('created_by uuid REFERENCES "user"(id) ON DELETE SET NULL')
+    expect(appSchema).toContain('id text PRIMARY KEY')
     expect(mfaSchema).toContain('CREATE TABLE IF NOT EXISTS user_mfa_sessions')
-    expect(mfaSchema).toContain('session_id text PRIMARY KEY REFERENCES "session"(id) ON DELETE CASCADE')
+    expect(mfaSchema).toContain('session_id uuid PRIMARY KEY REFERENCES "session"(id) ON DELETE CASCADE')
+    expect(mfaSchema).toContain('user_id uuid NOT NULL REFERENCES "user"(id) ON DELETE CASCADE')
+    const fkSql = [appSchema, mfaSchema].join('\n').match(/\b(?:user_id|session_id|created_by)\s+\w+(?:\s+NOT NULL)?\s+(?:PRIMARY KEY\s+)?REFERENCES\s+"(?:user|session)"\(id\)/g) ?? []
+    expect(fkSql).toHaveLength(5)
+    expect(fkSql.every((declaration) => declaration.includes('uuid'))).toBe(true)
+    const upgradeSchema = await readFile(resolve(process.cwd(), 'server/migrations', appMigrations[2].file), 'utf8')
+    expect(upgradeSchema).toContain('ALTER COLUMN user_id TYPE uuid')
+    expect(upgradeSchema).toContain('ALTER COLUMN session_id TYPE uuid')
   })
 
   it('blocks schema problems and unsafe changes before migrations run', () => {
@@ -36,10 +47,11 @@ describe('migration operations', () => {
       }),
       release: vi.fn(),
     }
+    const migrations = appMigrations.slice(0, 2)
     const readMigration = vi.fn(async (file: string) => `-- ${file}`)
-    await applyAppMigrations(client, appMigrations, readMigration)
+    await applyAppMigrations(client, migrations, readMigration)
     expect(readMigration).toHaveBeenCalledTimes(1)
-    expect(readMigration).toHaveBeenCalledWith(appMigrations[1].file)
+    expect(readMigration).toHaveBeenCalledWith(migrations[1].file)
     expect(calls.some(({ sql }) => sql.includes('-- 0001'))).toBe(false)
     expect(calls.some(({ sql }) => sql.includes('-- 0002'))).toBe(true)
     expect(calls.at(-1)?.sql).toBe('COMMIT')

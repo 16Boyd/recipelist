@@ -1,13 +1,13 @@
 ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mfa_enabled_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS user_roles (
-  user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+  user_id uuid PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
   role text NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS user_profiles (
-  user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+  user_id uuid PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
   app_data jsonb NOT NULL DEFAULT '{"recipes":[],"pantry":["garlic","spinach","couscous","chickpeas","plain yogurt","lemon","cucumber","dill","olive oil"],"shopping":[{"id":"shop-parmesan","name":"parmesan","checked":false},{"id":"shop-oats","name":"rolled oats","checked":true}]}'::jsonb,
   schema_version integer NOT NULL DEFAULT 1,
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS recipes (
   image text NOT NULL DEFAULT '',
   description text NOT NULL DEFAULT '',
   ingredients jsonb NOT NULL CHECK (jsonb_typeof(ingredients) = 'array'),
-  created_by text REFERENCES "user"(id) ON DELETE SET NULL,
+  created_by uuid REFERENCES "user"(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

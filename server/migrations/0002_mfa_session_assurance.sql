@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS user_mfa_sessions (
-  session_id text PRIMARY KEY REFERENCES "session"(id) ON DELETE CASCADE,
-  user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+  session_id uuid PRIMARY KEY REFERENCES "session"(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
   mfa_enabled_at timestamptz NOT NULL,
   verified_at timestamptz NOT NULL DEFAULT now()
 );
