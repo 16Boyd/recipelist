@@ -11,6 +11,7 @@ function isRecipe(value: unknown): value is Recipe {
     && typeof recipe.source === 'string' && typeof recipe.category === 'string'
     && typeof recipe.time === 'number' && typeof recipe.servings === 'number'
     && typeof recipe.image === 'string' && typeof recipe.description === 'string'
+    && typeof recipe.instructions === 'string'
     && Array.isArray(recipe.ingredients) && recipe.ingredients.every((item) => item
       && typeof item.name === 'string' && typeof item.amount === 'string')
 }

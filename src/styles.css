@@ -491,3 +491,14 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
   .form-field input { height: 36px; }
   .toast { right: 12px; bottom: 69px; }
 }
+.detail-instructions { margin: 16px 0 20px; padding: 14px 16px; border: 1px solid #e7ebe5; border-radius: 12px; background: #fbfcfa; }
+.detail-instructions h3 { margin: 4px 0 8px; color: #455347; font: 700 13px 'Manrope', sans-serif; }
+.detail-instructions p { margin: 0; color: #59665c; font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-instructions .detail-instructions-empty { color: #9da49a; font-style: italic; }
+.pantry-items, .pantry-catalog { list-style: none; padding: 0; margin: 1rem 0; }
+.pantry-items li, .pantry-catalog li { display: flex; align-items: center; gap: .75rem; padding: .65rem 0; border-bottom: 1px solid var(--line, #e8e8e3); }
+.pantry-items li { flex-wrap: wrap; }
+.pantry-items input, .inline-add input + input { min-width: 9rem; width: 10rem; padding: .55rem .7rem; border: 1px solid var(--line, #e8e8e3); border-radius: .5rem; }
+.pantry-items li > input { flex: 0 1 10rem; min-width: 0; margin-left: auto; }
+.pantry-catalog-heading { margin-top: 1.5rem; }
+.pantry-catalog li > .muted, .pantry-catalog li > button { margin-left: auto; }

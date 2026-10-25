@@ -9,6 +9,7 @@ export const demoRecipes: Recipe[] = [
     time: 25,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'A silky one-pan orzo with bright tomato, greens, and a little parmesan.',
     ingredients: [
       { name: 'orzo', amount: '1 cup' },
@@ -28,6 +29,7 @@ export const demoRecipes: Recipe[] = [
     time: 30,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'Herby couscous, crunchy chickpeas, and cool cucumber yogurt.',
     ingredients: [
       { name: 'chickpeas', amount: '1 can' },
@@ -46,6 +48,7 @@ export const demoRecipes: Recipe[] = [
     time: 35,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'Sweet-salty miso salmon with fluffy rice and quick pickled cucumber.',
     ingredients: [
       { name: 'salmon', amount: '2 fillets' },
@@ -64,6 +67,7 @@ export const demoRecipes: Recipe[] = [
     time: 40,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'Golden chicken, smashed potatoes, and a fresh lemon pan sauce.',
     ingredients: [
       { name: 'chicken breast', amount: '2' },
@@ -82,6 +86,7 @@ export const demoRecipes: Recipe[] = [
     time: 20,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1551500566-9c6f5f7cbb6a?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'Quick charred mushrooms with avocado, lime, and a smoky spice blend.',
     ingredients: [
       { name: 'mushrooms', amount: '8 oz' },
@@ -100,6 +105,7 @@ export const demoRecipes: Recipe[] = [
     time: 30,
     servings: 4,
     image: 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=1100&q=85',
+    instructions: '',
     description: 'A weeknight skillet with browned sausage, peppers, and warm spices.',
     ingredients: [
       { name: 'Italian sausage', amount: '1 lb' },
@@ -116,7 +122,7 @@ export const initialAppData: AppData = {
   // Shared demo recipes are loaded from public.recipes; keep this empty so new
   // profiles do not get a redundant private copy of the global catalog.
   recipes: [],
-  pantry: ['garlic', 'spinach', 'couscous', 'chickpeas', 'plain yogurt', 'lemon', 'cucumber', 'dill', 'olive oil'],
+  pantry: ['garlic', 'spinach', 'couscous', 'chickpeas', 'plain yogurt', 'lemon', 'cucumber', 'dill', 'olive oil'].map((name) => ({ name, amount: '' })),
   shopping: [
     { id: 'shop-parmesan', name: 'parmesan', checked: false },
     { id: 'shop-oats', name: 'rolled oats', checked: true },

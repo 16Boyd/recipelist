@@ -11,6 +11,7 @@ export const appMigrations: AppMigration[] = [
   { version: '0001_app_data_and_recipe_catalog', file: '0001_app_data_and_recipe_catalog.sql' },
   { version: '0002_mfa_session_assurance', file: '0002_mfa_session_assurance.sql' },
   { version: '0003_auth_foreign_keys_uuid', file: '0003_auth_foreign_keys_uuid.sql' },
+  { version: '0004_recipe_instructions', file: '0004_recipe_instructions.sql' },
 ]
 
 type MigrationClient = {

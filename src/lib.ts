@@ -1,4 +1,4 @@
-import type { AppData, Ingredient, Recipe, RecipeMatch, ShoppingItem } from './types'
+import type { AppData, Ingredient, PantryItem, Recipe, RecipeMatch, ShoppingItem } from './types'
 
 /** Normalize ingredient text for case-insensitive matching, including common plural forms. */
 export function normalizeName(value: string): string {
@@ -92,6 +92,7 @@ function validRecipe(value: unknown): value is Recipe {
     && typeof recipe.servings === 'number'
     && typeof recipe.image === 'string'
     && typeof recipe.description === 'string'
+    && (recipe.instructions === undefined || (typeof recipe.instructions === 'string' && recipe.instructions.length <= 12000))
     && Array.isArray(recipe.ingredients)
     && recipe.ingredients.length > 0
     && recipe.ingredients.every((item) => item
@@ -104,6 +105,7 @@ function validRecipe(value: unknown): value is Recipe {
 export function parseAppData(value: unknown): AppData {
   if (!value || typeof value !== 'object') throw new Error('Your saved kitchen data has an invalid format.')
   const candidate = value as Partial<AppData>
+  const pantryValues: unknown = (value as { pantry?: unknown }).pantry
   /** Check the fields required for one persisted shopping-list item. */
   const validShoppingItem = (item: unknown): item is ShoppingItem => Boolean(item)
     && typeof item === 'object'
@@ -111,20 +113,84 @@ export function parseAppData(value: unknown): AppData {
     && typeof (item as ShoppingItem).name === 'string'
     && typeof (item as ShoppingItem).checked === 'boolean'
   if (!Array.isArray(candidate.recipes) || !candidate.recipes.every(validRecipe)
-    || !Array.isArray(candidate.pantry) || !candidate.pantry.every((item) => typeof item === 'string' && Boolean(item.trim()))
+    || !Array.isArray(pantryValues) || !pantryValues.every((item: unknown) => typeof item === 'string' ? Boolean(item.trim()) : Boolean(item && typeof item === 'object' && typeof (item as PantryItem).name === 'string' && (item as PantryItem).name.trim() && typeof (item as PantryItem).amount === 'string'))
     || !Array.isArray(candidate.shopping) || !candidate.shopping.every(validShoppingItem)) {
     throw new Error('Your saved kitchen data is incomplete or invalid.')
   }
-  return { recipes: candidate.recipes, pantry: candidate.pantry, shopping: candidate.shopping }
+  return {
+    recipes: candidate.recipes.map((recipe) => ({ ...recipe, instructions: recipe.instructions ?? '' })),
+    pantry: pantryValues.map((item: string | PantryItem) => typeof item === 'string' ? { name: item, amount: '' } : item),
+    shopping: candidate.shopping,
+  }
 }
 
 /** Rank recipes by the proportion of ingredients available in the pantry, then by missing items and cook time. */
-export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[] {
+function parseQuantity(value: string): { value: number; dimension: string } | undefined {
+  const fractions: Record<string, string> = { '½': '1/2', '¼': '1/4', '¾': '3/4', '⅓': '1/3', '⅔': '2/3' }
+  const normalized = value.trim().toLocaleLowerCase().replace(/[½¼¾⅓⅔]/g, (fraction) => ` ${fractions[fraction]}`).trim()
+  const number = '(?:\\d+\\/\\d+|\\d+(?:\\.\\d+)?)'
+  const match = normalized.match(new RegExp(`^(${number})(?:\\s+(${number}))?\\s*([\\p{L}]+)?$`, 'u'))
+  if (!match) return undefined
+  const parseNumber = (raw?: string): number | undefined => {
+    if (!raw) return 0
+    if (!raw.includes('/')) {
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+    }
+    const [numeratorText, denominatorText] = raw.split('/')
+    const numerator = Number(numeratorText)
+    const denominator = Number(denominatorText)
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0 || numerator < 0 || denominator < 0) return undefined
+    const parsed = numerator / denominator
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  const whole = parseNumber(match[1])
+  const fraction = parseNumber(match[2])
+  if (whole === undefined || fraction === undefined) return undefined
+  const count = whole + fraction
+  if (!Number.isFinite(count)) return undefined
+  const rawUnit = match[3] ?? 'each'
+  const unit = rawUnit === 'leaves'
+    ? 'leaf'
+    : rawUnit.replace(/(ches|shes|sses|xes|zes|oes)$/, (plural) => plural.slice(0, -2)).replace(/s$/, '')
+  const units: Record<string, [string, number]> = {
+    tsp: ['volume', 4.92892], teaspoon: ['volume', 4.92892], tbsp: ['volume', 14.7868], tablespoon: ['volume', 14.7868],
+    cup: ['volume', 236.588], ml: ['volume', 1], milliliter: ['volume', 1], l: ['volume', 1000], liter: ['volume', 1000],
+    g: ['weight', 1], gram: ['weight', 1], kg: ['weight', 1000], kilogram: ['weight', 1000], oz: ['weight', 28.3495], ounce: ['weight', 28.3495], lb: ['weight', 453.592], pound: ['weight', 453.592],
+    each: ['count:each', 1], can: ['count:can', 1], clove: ['count:clove', 1], piece: ['count:piece', 1], package: ['count:package', 1],
+    fillet: ['count:fillet', 1], breast: ['count:breast', 1], thigh: ['count:thigh', 1], wing: ['count:wing', 1], drumstick: ['count:drumstick', 1],
+    slice: ['count:slice', 1], strip: ['count:strip', 1], stalk: ['count:stalk', 1], sprig: ['count:sprig', 1], head: ['count:head', 1],
+    bunch: ['count:bunch', 1], ear: ['count:ear', 1], bulb: ['count:bulb', 1], sheet: ['count:sheet', 1], leaf: ['count:leaf', 1],
+  }
+  const conversion = units[unit]
+  if (!conversion) return undefined
+  const converted = count * conversion[1]
+  return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
+}
+
+export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
   return recipes.map((recipe) => {
     const available: Ingredient[] = []
     const missing: Ingredient[] = []
+    const usedAmounts = new Map<number, number>()
     recipe.ingredients.forEach((ingredient) => {
-      if (pantry.some((pantryName) => ingredientNamesEquivalent(ingredient.name, pantryName))) available.push(ingredient)
+      const required = parseQuantity(ingredient.amount)
+      let matchedIndex = -1
+      pantry.some((item, index) => {
+        if (!ingredientNamesEquivalent(ingredient.name, item.name)) return false
+        const have = parseQuantity(item.amount)
+        if (!have || !required) {
+          matchedIndex = index
+          return true
+        }
+        if (have.dimension !== required.dimension) return false
+        const used = usedAmounts.get(index) ?? 0
+        if (have.value - used < required.value) return false
+        usedAmounts.set(index, used + required.value)
+        matchedIndex = index
+        return true
+      })
+      if (matchedIndex >= 0) available.push(ingredient)
       else missing.push(ingredient)
     })
     const percent = recipe.ingredients.length ? Math.round((available.length / recipe.ingredients.length) * 100) : 0
@@ -133,7 +199,7 @@ export function matchRecipes(recipes: Recipe[], pantry: string[]): RecipeMatch[]
 }
 
 /** Create a personal recipe with normalized defaults and a newly generated ID. */
-export function makeRecipe(title: string, source: string, category: string, time: number, servings: number, ingredients: Ingredient[]): Recipe {
+export function makeRecipe(title: string, source: string, category: string, time: number, servings: number, ingredients: Ingredient[], instructions = ''): Recipe {
   return {
     id: `recipe-${crypto.randomUUID()}`,
     title: title.trim(),
@@ -143,6 +209,7 @@ export function makeRecipe(title: string, source: string, category: string, time
     servings,
     image: 'https://images.unsplash.com/photo-1490645935967-10de6ba17061?auto=format&fit=crop&w=1100&q=85',
     description: 'A recipe saved to your personal library.',
+    instructions,
     ingredients,
   }
 }

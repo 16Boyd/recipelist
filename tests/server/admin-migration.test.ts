@@ -10,6 +10,7 @@ describe('migration operations', () => {
       '0001_app_data_and_recipe_catalog',
       '0002_mfa_session_assurance',
       '0003_auth_foreign_keys_uuid',
+      '0004_recipe_instructions',
     ])
     const [appSchema, mfaSchema] = await Promise.all(appMigrations.map(({ file }) =>
       readFile(resolve(process.cwd(), 'server/migrations', file), 'utf8'),
@@ -30,6 +31,9 @@ describe('migration operations', () => {
     const upgradeSchema = await readFile(resolve(process.cwd(), 'server/migrations', appMigrations[2].file), 'utf8')
     expect(upgradeSchema).toContain('ALTER COLUMN user_id TYPE uuid')
     expect(upgradeSchema).toContain('ALTER COLUMN session_id TYPE uuid')
+    const instructionsSchema = await readFile(resolve(process.cwd(), 'server/migrations', appMigrations[3]!.file), 'utf8')
+    expect(instructionsSchema).toContain("ADD COLUMN IF NOT EXISTS instructions text NOT NULL DEFAULT ''")
+    expect(instructionsSchema).toContain('CHECK (length(instructions) <= 12000)')
   })
 
   it('blocks schema problems and unsafe changes before migrations run', () => {

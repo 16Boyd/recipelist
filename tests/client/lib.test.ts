@@ -3,9 +3,9 @@ import { createId, ingredientNamesEquivalent, makeRecipe, matchRecipes, normaliz
 import type { AppData, Ingredient, Recipe } from '../../src/types'
 
 const recipe = (id: string, title: string, ingredients: Ingredient[], time = 30): Recipe => ({
-  id, title, source: 'Tests', category: 'Dinner', time, servings: 2, image: '', description: '', ingredients,
+  id, title, source: 'Tests', category: 'Dinner', time, servings: 2, image: '', description: '', instructions: '', ingredients,
 })
-const validData: AppData = { recipes: [recipe('r1', 'Meal', [{ name: 'Rice', amount: '1 cup' }])], pantry: ['rice'], shopping: [{ id: 's1', name: 'Salt', checked: false }] }
+const validData: AppData = { recipes: [recipe('r1', 'Meal', [{ name: 'Rice', amount: '1 cup' }])], pantry: [{ name: 'rice', amount: '' }], shopping: [{ id: 's1', name: 'Salt', checked: false }] }
 
 describe('ingredient normalization and substitutions', () => {
   it('retains common normalization and inflection behavior', () => {
@@ -47,7 +47,11 @@ describe('ingredient normalization and substitutions', () => {
 
 describe('app data validation', () => {
   it('accepts valid app data and returns a validated shape', () => expect(parseAppData(validData)).toEqual(validData))
-  it.each([null, [], 'data', {}, { ...validData, recipes: [{}] }, { ...validData, recipes: [{ ...validData.recipes[0], ingredients: [] }] }, { ...validData, pantry: [' '] }, { ...validData, shopping: [{ id: 'x', name: 'x', checked: 'no' }] }])('rejects invalid app data: %j', (input) => {
+  it('normalizes legacy pantry names and preserves tracked amounts', () => {
+    const normalized = parseAppData({ ...validData, pantry: ['rice', { name: 'salt', amount: '2 tsp' }] })
+    expect(normalized.pantry).toEqual([{ name: 'rice', amount: '' }, { name: 'salt', amount: '2 tsp' }])
+  })
+  it.each([null, [], 'data', {}, { ...validData, recipes: [{}] }, { ...validData, recipes: [{ ...validData.recipes[0], ingredients: [] }] }, { ...validData, pantry: [{ name: ' ', amount: '' }] }, { ...validData, shopping: [{ id: 'x', name: 'x', checked: 'no' }] }])('rejects invalid app data: %j', (input) => {
     expect(() => parseAppData(input)).toThrow(/invalid|incomplete/i)
   })
 })
@@ -59,7 +63,7 @@ describe('recipe matching and construction', () => {
       recipe('fish', 'Fish dinner', [{ name: 'cod fillet', amount: '2 fillets' }, { name: 'shrimp', amount: '6 oz' }]),
       recipe('plant', 'Plant dinner', [{ name: 'tofu', amount: '1 block' }, { name: 'olive oil', amount: '1 tbsp' }]),
     ]
-    const results = matchRecipes(recipes, ['chicken tenders', 'ground bison', 'salmon', 'olive oil'])
+    const results = matchRecipes(recipes, [{ name: 'chicken tenders', amount: '' }, { name: 'ground bison', amount: '' }, { name: 'salmon', amount: '' }, { name: 'olive oil', amount: '' }])
     const byId = new Map(results.map((result) => [result.recipe.id, result]))
     expect(byId.get('poultry')).toMatchObject({ percent: 67, available: [recipes[0]!.ingredients[0], recipes[0]!.ingredients[1]], missing: [recipes[0]!.ingredients[2]] })
     expect(byId.get('fish')).toMatchObject({ percent: 50, available: [recipes[1]!.ingredients[0]], missing: [recipes[1]!.ingredients[1]] })
@@ -67,12 +71,66 @@ describe('recipe matching and construction', () => {
   })
   it('preserves recipe ingredient labels and amounts for equivalent pantry matches', () => {
     const original = recipe('poultry-only', 'Chicken dinner', [{ name: 'Ground chicken', amount: '1 lb' }])
-    expect(matchRecipes([original], ['Chicken tenders'])[0]).toMatchObject({ available: original.ingredients, missing: [], percent: 100 })
+    expect(matchRecipes([original], [{ name: 'Chicken tenders', amount: '' }])[0]).toMatchObject({ available: original.ingredients, missing: [], percent: 100 })
+  })
+  it('uses comparable pantry quantities and falls back to name presence when quantities cannot be compared', () => {
+    const row = recipe('qty', 'Quantity', [
+      { name: 'rice', amount: '2 cups' }, { name: 'oil', amount: '3 tbsp' },
+      { name: 'salt', amount: '1/2 tsp' }, { name: 'cans', amount: '2 cans' },
+    ])
+    const result = matchRecipes([row], [
+      { name: 'rice', amount: '1 cup' }, { name: 'oil', amount: '45 ml' },
+      { name: 'salt', amount: '½ tsp' }, { name: 'cans', amount: '1 can' },
+    ])[0]!
+    expect(result.available.map((item) => item.name)).toEqual(['oil', 'salt'])
+    expect(result.missing.map((item) => item.name)).toEqual(['rice', 'cans'])
+    expect(matchRecipes([row], [{ name: 'rice', amount: '' }])[0]?.available).toContain(row.ingredients[0])
+    expect(matchRecipes([recipe('unknown-unit', 'Unknown unit', [{ name: 'rice', amount: '2 scoops' }])], [{ name: 'rice', amount: '1 cup' }])[0]?.available).toHaveLength(1)
+  })
+  it('does not reuse the same pantry quantity for repeated recipe ingredients', () => {
+    const row = recipe('repeat-qty', 'Repeated rice', [{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '1 cup' }])
+    const result = matchRecipes([row], [{ name: 'rice', amount: '1 cup' }])[0]!
+    expect(result.available).toEqual([row.ingredients[0]])
+    expect(result.missing).toEqual([row.ingredients[1]])
+  })
+  it('compares count units with singular and plural forms while keeping count dimensions distinct', () => {
+    const filletRecipe = recipe('fillets', 'Fish', [{ name: 'salmon', amount: '2 fillets' }])
+    expect(matchRecipes([filletRecipe], [{ name: 'salmon', amount: '1 fillet' }])[0]?.missing).toEqual(filletRecipe.ingredients)
+    expect(matchRecipes([filletRecipe], [{ name: 'salmon', amount: '2 fillet' }])[0]?.available).toEqual(filletRecipe.ingredients)
+    expect(matchRecipes([filletRecipe], [{ name: 'salmon', amount: '2 fillets' }])[0]?.available).toEqual(filletRecipe.ingredients)
+
+    const sliceRecipe = recipe('slices', 'Sandwich', [{ name: 'bread', amount: '2 slices' }])
+    expect(matchRecipes([sliceRecipe], [{ name: 'bread', amount: '1 slice' }])[0]?.missing).toEqual(sliceRecipe.ingredients)
+    expect(matchRecipes([sliceRecipe], [{ name: 'bread', amount: '2 slice' }])[0]?.available).toEqual(sliceRecipe.ingredients)
+    expect(matchRecipes([filletRecipe], [{ name: 'salmon', amount: '2 pieces' }])[0]?.missing).toEqual(filletRecipe.ingredients)
+
+    const bunchRecipe = recipe('bunches', 'Herbs', [{ name: 'parsley', amount: '2 bunches' }])
+    expect(matchRecipes([bunchRecipe], [{ name: 'parsley', amount: '1 bunch' }])[0]?.missing).toEqual(bunchRecipe.ingredients)
+    const leavesRecipe = recipe('leaves', 'Salad', [{ name: 'lettuce', amount: '2 leaves' }])
+    expect(matchRecipes([leavesRecipe], [{ name: 'lettuce', amount: '1 leaf' }])[0]?.missing).toEqual(leavesRecipe.ingredients)
+  })
+  it('parses mixed Unicode fractions and ignores invalid quantities instead of treating them as zero', () => {
+    const row = recipe('fractions', 'Fractions', [
+      { name: 'rice', amount: '1½ cups' },
+      { name: 'flour', amount: '2/3 cup' },
+      { name: 'beans', amount: '1 can' },
+    ])
+    const result = matchRecipes([row], [
+      { name: 'rice', amount: '1 1/2 cups' },
+      { name: 'flour', amount: '1/0 cup' },
+      { name: 'beans', amount: '1 package' },
+    ])[0]!
+    expect(result.available.map((item) => item.name)).toEqual(['rice', 'flour'])
+    expect(result.missing.map((item) => item.name)).toEqual(['beans'])
+    expect(matchRecipes([row], [{ name: 'rice', amount: '1 cup' }])[0]?.missing).toContain(row.ingredients[0])
+    expect(matchRecipes([row], [{ name: 'rice', amount: '1/0 cups' }])[0]?.available).toContain(row.ingredients[0])
+    expect(matchRecipes([row], [{ name: 'rice', amount: '999999999999999999999999999999999999999999999999999999999 cups' }])[0]?.available).toContain(row.ingredients[0])
+    expect(matchRecipes([row], [{ name: 'rice', amount: `${'1' + '0'.repeat(307)} cups` }])[0]?.available).toContain(row.ingredients[0])
   })
   it('sorts by match percentage, then missing count, then cooking time', () => {
     const rows = [recipe('slow', 'Slow', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 60), recipe('fast', 'Fast', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 10), recipe('more-missing', 'More missing', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }, { name: 'salt', amount: '' }], 1)]
-    expect(matchRecipes(rows, ['rice']).map(({ recipe: row }) => row.id)).toEqual(['fast', 'slow', 'more-missing'])
-    expect(matchRecipes([recipe('tieA', 'A', [{ name: 'rice', amount: '' }, { name: 'salt', amount: '' }], 10), recipe('tieB', 'B', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 20)], ['rice']).map(({ recipe: row }) => row.id)).toEqual(['tieA', 'tieB'])
+    expect(matchRecipes(rows, [{ name: 'rice', amount: '' }]).map(({ recipe: row }) => row.id)).toEqual(['fast', 'slow', 'more-missing'])
+    expect(matchRecipes([recipe('tieA', 'A', [{ name: 'rice', amount: '' }, { name: 'salt', amount: '' }], 10), recipe('tieB', 'B', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 20)], [{ name: 'rice', amount: '' }]).map(({ recipe: row }) => row.id)).toEqual(['tieA', 'tieB'])
   })
   it('creates recipes with defaults, trimmed values, and unique prefixed IDs', () => {
     const uuid = vi.spyOn(crypto, 'randomUUID')
@@ -83,5 +141,13 @@ describe('recipe matching and construction', () => {
     expect(result.image).toContain('images.unsplash.com')
     expect(createId('shop')).toBe('shop-00000000-0000-4000-8000-000000000002')
     uuid.mockRestore()
+  })
+
+  it('normalizes legacy recipes without instructions and preserves multiline instructions', () => {
+    const legacy: Omit<Recipe, 'instructions'> = (({ instructions: _instructions, ...rest }) => rest)(recipe('legacy', 'Legacy', [{ name: 'rice', amount: '1 cup' }]))
+    const normalized = parseAppData({ ...validData, recipes: [legacy] })
+    expect(normalized.recipes[0]?.instructions).toBe('')
+    const steps = 'Toast rice.\nAdd water and simmer.'
+    expect(parseAppData({ ...validData, recipes: [{ ...legacy, instructions: steps }] }).recipes[0]?.instructions).toBe(steps)
   })
 })

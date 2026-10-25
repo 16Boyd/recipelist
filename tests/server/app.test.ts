@@ -11,7 +11,7 @@ const session: ServerSession = {
 }
 const recipe = {
   id: 'chicken-soup', title: 'Chicken soup', source: 'Kitchen', category: 'Dinner', time: 30, servings: 4,
-  image: '', description: 'Soup', ingredients: [{ name: 'Chicken', amount: '1 lb' }],
+  image: '', description: 'Soup', instructions: 'Simmer until ready.', ingredients: [{ name: 'Chicken', amount: '1 lb' }],
 }
 const appData = { recipes: [], pantry: ['salt'], shopping: [] }
 
@@ -26,12 +26,13 @@ describe('HTTP app factory', () => {
     profile: unknown
     recipeRows: unknown[]
     inserted: unknown
+    insertValues: unknown[]
     failOn: string
     authCookie: string
   }
 
   beforeEach(async () => {
-    state = { authenticated: true, role: 'member', mfa: true, profile: appData, recipeRows: [recipe], inserted: recipe, failOn: '', authCookie: '' }
+    state = { authenticated: true, role: 'member', mfa: true, profile: appData, recipeRows: [recipe], inserted: recipe, insertValues: [], failOn: '', authCookie: '' }
     staticRoot = await mkdtemp(join(tmpdir(), 'recipelist-test-'))
     await mkdir(join(staticRoot, 'assets'))
     await writeFile(join(staticRoot, 'index.html'), '<main>RecipeList test shell</main>')
@@ -54,6 +55,7 @@ describe('HTTP app factory', () => {
         }
         if (sql.includes('SELECT id, title, source')) return { rows: state.recipeRows as Row[], rowCount: state.recipeRows.length }
         if (sql.includes('INSERT INTO recipes')) {
+          state.insertValues = values ?? []
           if (state.inserted === null) return { rows: [], rowCount: 0 }
           return { rows: [state.inserted] as Row[], rowCount: 1 }
         }
@@ -178,6 +180,11 @@ describe('HTTP app factory', () => {
     const created = await request('/api/recipes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(recipe) })
     expect(created.status).toBe(201)
     expect(await created.json()).toEqual(recipe)
+    expect(state.insertValues[8]).toBe(recipe.instructions)
+    expect(state.insertValues[9]).toBe(JSON.stringify(recipe.ingredients))
+    const { instructions: _legacyInstructions, ...legacyRecipe } = recipe
+    expect((await request('/api/recipes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(legacyRecipe) })).status).toBe(400)
+    expect((await request('/api/recipes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ ...recipe, instructions: '' }) })).status).toBe(400)
   })
 
   it('returns API 404 and masks unexpected route failures as a generic 500', async () => {

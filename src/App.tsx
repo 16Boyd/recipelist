@@ -6,9 +6,20 @@ import { createId, makeRecipe, matchRecipes, normalizeName } from './lib'
 import MfaGate from './MfaGate'
 import { loadProfile, saveProfile } from './profileStorage'
 import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from './recipeStorage'
-import type { AppData, Ingredient, Recipe, RecipeMatch, UserRole } from './types'
+import type { AppData, Ingredient, PantryItem, Recipe, RecipeMatch, UserRole } from './types'
 
 type Section = 'discover' | 'recipes' | 'pantry' | 'shopping'
+
+function getRecipeIngredientCatalog(recipes: Recipe[]): string[] {
+  const catalog = new Map<string, string>()
+  for (const recipe of recipes) {
+    for (const ingredient of recipe.ingredients) {
+      const normalized = normalizeName(ingredient.name)
+      if (!catalog.has(normalized)) catalog.set(normalized, ingredient.name)
+    }
+  }
+  return Array.from(catalog.values()).sort((a, b) => a.localeCompare(b))
+}
 
 const sectionLabels: Record<Section, string> = {
   discover: 'Discover',
@@ -275,6 +286,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   const [section, setSection] = useState<Section>('discover')
   const [query, setQuery] = useState('')
   const [pantryEntry, setPantryEntry] = useState('')
+  const [pantryAmount, setPantryAmount] = useState('')
   const [shoppingEntry, setShoppingEntry] = useState('')
   const [onlyCookable, setOnlyCookable] = useState(false)
   const [showRecipeForm, setShowRecipeForm] = useState(false)
@@ -357,18 +369,29 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     event.preventDefault()
     const value = pantryEntry.trim()
     if (!value) return
-    if (data.pantry.some((item) => normalizeName(item) === normalizeName(value))) {
+    if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(value))) {
       setToast(`${value} is already in your pantry`)
     } else {
-      updateData((current) => ({ ...current, pantry: [...current.pantry, value].sort((a, b) => a.localeCompare(b)) }))
+      updateData((current) => ({ ...current, pantry: [...current.pantry, { name: value, amount: pantryAmount.trim() }].sort((a, b) => a.name.localeCompare(b.name)) }))
       setToast(`${value} added to your pantry`)
     }
     setPantryEntry('')
+    setPantryAmount('')
   }
 
   /** Remove the selected pantry entry. */
   function removePantryItem(value: string) {
-    updateData((current) => ({ ...current, pantry: current.pantry.filter((item) => item !== value) }))
+    updateData((current) => ({ ...current, pantry: current.pantry.filter((item) => item.name !== value) }))
+  }
+
+  function updatePantryAmount(name: string, amount: string) {
+    updateData((current) => ({ ...current, pantry: current.pantry.map((item) => item.name === name ? { ...item, amount } : item) }))
+  }
+
+  function addCatalogIngredient(name: string) {
+    if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(name))) return
+    updateData((current) => ({ ...current, pantry: [...current.pantry, { name, amount: '' }].sort((a, b) => a.name.localeCompare(b.name)) }))
+    setToast(`${name} added to your pantry`)
   }
 
   /** Add unique normalized ingredient names to the shopping list. */
@@ -453,7 +476,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
 
   /** Add ingredients from the selected recipe that are not already in the pantry. */
   function addRecipeIngredientsToPantry(recipe: Recipe) {
-    const known = new Set(data.pantry.map(normalizeName))
+    const known = new Set(data.pantry.map((item) => normalizeName(item.name)))
     const newItems = recipe.ingredients.map((ingredient) => ingredient.name.trim()).filter((name) => {
       const normalized = normalizeName(name)
       if (!name || known.has(normalized)) return false
@@ -464,7 +487,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
       setToast('You already have all these ingredients')
       return
     }
-    updateData((current) => ({ ...current, pantry: [...current.pantry, ...newItems].sort((a, b) => a.localeCompare(b)) }))
+    updateData((current) => ({ ...current, pantry: [...current.pantry, ...newItems.map((name) => ({ name, amount: '' }))].sort((a, b) => a.name.localeCompare(b.name)) }))
     setToast(`${newItems.length} ${newItems.length === 1 ? 'ingredient' : 'ingredients'} added to your pantry`)
   }
 
@@ -547,7 +570,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
             onShowPantry={() => setSection('pantry')}
           />}
           {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={setSelectedRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
-          {section === 'pantry' && <PantryView pantry={data.pantry} entry={pantryEntry} onEntryChange={setPantryEntry} onSubmit={addPantryItem} onRemove={removePantryItem} matches={matches} onOpen={setSelectedRecipe} onAddMissing={addMissing} />}
+          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={getRecipeIngredientCatalog(recipes)} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={setSelectedRecipe} onAddMissing={addMissing} />}
           {section === 'shopping' && <ShoppingView items={data.shopping} entry={shoppingEntry} onEntryChange={setShoppingEntry} onSubmit={addShoppingEntry} onToggle={toggleShoppingItem} onRemove={(id) => updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => item.id !== id) }))} onClearChecked={clearChecked} />}
 
           <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> {saveStatus === 'saved' ? `Saved to ${user.email ?? 'your profile'}` : saveStatus === 'saving' ? 'Saving to your profile…' : 'Could not save to your profile'}</span></footer>
@@ -674,15 +697,16 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
 }
 
 /** Render pantry editing and recipe discovery actions. */
-function PantryView({ pantry, entry, onEntryChange, onSubmit, onRemove, matches, onOpen, onAddMissing }: {
-  pantry: string[]; entry: string; onEntryChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (value: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
+function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountChange, onSubmit, onRemove, onAmountUpdate, onAddCatalog, matches, onOpen, onAddMissing }: {
+  pantry: PantryItem[]; catalog: string[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (value: string) => void; onAmountUpdate: (name: string, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
   const cookable = matches.filter((match) => match.missing.length === 0)
   return <div className="pantry-layout">
     <section className="surface-card pantry-card">
       <div className="surface-heading"><div><div className="section-kicker">WHAT’S ON HAND</div><h2>Your ingredients <span className="pill-count">{pantry.length}</span></h2><p>Add the ingredients you have. We’ll match them to your recipes.</p></div><span className="surface-illustration"><Icon name="basket" size={23} /></span></div>
-      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
-      {pantry.length ? <div className="ingredient-cloud">{pantry.map((item) => <span className="ingredient-chip" key={item}><span className="ingredient-bullet" />{item}<button onClick={() => onRemove(item)} aria-label={`Remove ${item} from pantry`}><Icon name="close" size={13} /></button></span>)}</div> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
+      {pantry.length ? <ul className="pantry-items">{pantry.map((item) => <li key={item.name}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={`pantry-qty-${normalizeName(item.name).replace(/\s/g, '-')}`}>{item.name} amount on hand</label><input id={`pantry-qty-${normalizeName(item.name).replace(/\s/g, '-')}`} aria-label={`${item.name} amount on hand`} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(item.name, event.target.value)} /><button onClick={() => onRemove(item.name)} aria-label={`Remove ${item.name} from pantry`}><Icon name="close" size={13} /></button></li>)}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      <div className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</div><ul className="pantry-catalog">{catalog.map((name) => { const tracked = pantry.find((item) => normalizeName(item.name) === normalizeName(name)); return <li key={name}><span>{name}</span>{tracked ? <span className="muted">Tracked{tracked.amount ? ` · ${tracked.amount}` : ''}</span> : <button className="text-button" onClick={() => onAddCatalog(name)}>Add to pantry <Icon name="plus" size={14} /></button>}</li> })}</ul>
       <div className="pantry-footnote"><Icon name="leaf" size={15} /> Ingredient names are matched flexibly, regardless of capitalization.</div>
     </section>
     <section className="surface-card pantry-suggestions">
@@ -734,6 +758,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
   const [time, setTime] = useState('30')
   const [servings, setServings] = useState('2')
   const [ingredientsText, setIngredientsText] = useState('')
+  const [instructions, setInstructions] = useState('')
   const [destination, setDestination] = useState<'personal' | 'shared'>('personal')
   const [error, setError] = useState('')
 
@@ -746,7 +771,9 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
     }).filter((item) => item.name)
     if (!title.trim()) { setError('Give your recipe a name to continue.'); return }
     if (!ingredients.length) { setError('Add at least one ingredient, one per line.'); return }
-    const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients)
+    if (!instructions.trim()) { setError('Add instructions for your recipe to continue.'); return }
+    if (instructions.length > 12000) { setError('Instructions must be 12,000 characters or fewer.'); return }
+    const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients, instructions)
     if (destination === 'shared') {
       try { await onSaveShared(recipe) }
       catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Could not save to the shared catalog.') }
@@ -762,6 +789,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
       <label className="form-field"><span>Servings</span><input type="number" min="1" value={servings} onChange={(event) => setServings(event.target.value)} /></label>
       {isAdmin && <label className="form-field wide"><span>Save to</span><select value={destination} onChange={(event) => setDestination(event.target.value as 'personal' | 'shared')}><option value="personal">My private recipes</option><option value="shared">Shared RecipeList catalog</option></select><small className="field-hint">Shared recipes are available to every RecipeList user.</small></label>}
       <label className="form-field wide"><span>Ingredients <small>One per line · ingredient | amount</small></span><textarea value={ingredientsText} onChange={(event) => setIngredientsText(event.target.value)} placeholder={'chickpeas | 1 can\nlemon | 1\nplain yogurt | ½ cup'} rows={5} required /></label>
+      <label className="form-field wide"><span>Instructions</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={'Add each cooking step on a new line.'} rows={6} maxLength={12000} required /></label>
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit" disabled={savingShared}>{savingShared ? 'Saving…' : 'Save recipe'} {!savingShared && <Icon name="arrow" size={16} />}</button></div>
     </form>
@@ -773,11 +801,12 @@ function RecipeDetails({ recipe, match, onClose, onAddMissing, onAddIngredients 
   return <Modal onClose={onClose} title={recipe.title} description={`${recipe.source} · ${recipe.time} minutes · ${recipe.servings} servings`} wide>
     <div className="detail-image" style={{ backgroundImage: `linear-gradient(180deg, transparent, rgba(24, 37, 29, .28)), url("${recipe.image}")` }}><span className="source-pill">{recipe.source}</span><span className="detail-category">{recipe.category}</span></div>
     <p className="detail-description">{recipe.description}</p>
+    <section className="detail-instructions" aria-labelledby="recipe-instructions-heading"><span className="section-kicker">HOW TO MAKE IT</span><h3 id="recipe-instructions-heading">Instructions</h3>{recipe.instructions?.trim() ? <p>{recipe.instructions}</p> : <p className="detail-instructions-empty">No instructions have been added for this recipe yet.</p>}</section>
     {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missing.length ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missing.length ? `${match.missing.length} missing` : 'Ready to cook'}</span></div>}
     <div className="detail-ingredients-heading"><div><span className="section-kicker">THE SHOPPING LIST</span><h3>Ingredients <small>{recipe.ingredients.length}</small></h3></div><button className="text-button" onClick={() => onAddIngredients(recipe)}>Add all to pantry <Icon name="plus" size={15} /></button></div>
-    <ul className="detail-ingredients">{recipe.ingredients.map((ingredient) => {
-      const isAvailable = Boolean(match?.available.some((item) => normalizeName(item.name) === normalizeName(ingredient.name)))
-      return <li key={ingredient.name} className={isAvailable ? 'available' : ''}><span className="detail-ingredient-check">{isAvailable && <Icon name="check" size={13} />}</span><span>{ingredient.name}</span><span className="detail-amount">{ingredient.amount}</span></li>
+    <ul className="detail-ingredients">{recipe.ingredients.map((ingredient, index) => {
+      const isAvailable = Boolean(match?.available.includes(ingredient))
+      return <li key={`${ingredient.name}-${index}`} className={isAvailable ? 'available' : ''}><span className="detail-ingredient-check">{isAvailable && <Icon name="check" size={13} />}</span><span>{ingredient.name}</span><span className="detail-amount">{ingredient.amount}</span></li>
     })}</ul>
     {match && <div className="modal-actions detail-actions"><span className="detail-hint">{match.missing.length ? `${match.missing.length} ingredients still to get` : 'You have everything you need'}</span><button className="button button-dark" onClick={() => onAddMissing(match)}>{match.missing.length ? 'Add missing to list' : 'Ready to cook'} <Icon name={match.missing.length ? 'plus' : 'check'} size={16} /></button></div>}
   </Modal>

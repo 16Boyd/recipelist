@@ -188,7 +188,7 @@ export function createServerApp(options: ServerAppOptions) {
 
   app.get('/api/recipes', loadSession, requireFreshMfa, async (_req, res, next) => {
     try {
-      const result = await pool.query('SELECT id, title, source, category, time, servings, image, description, ingredients FROM recipes ORDER BY title, id')
+      const result = await pool.query('SELECT id, title, source, category, time, servings, image, description, instructions, ingredients FROM recipes ORDER BY title, id')
       res.json(result.rows)
     } catch (error) { next(error) }
   })
@@ -199,11 +199,11 @@ export function createServerApp(options: ServerAppOptions) {
     const recipe = req.body
     try {
       const result = await pool.query(
-        `INSERT INTO recipes(id, title, source, category, time, servings, image, description, ingredients, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+        `INSERT INTO recipes(id, title, source, category, time, servings, image, description, instructions, ingredients, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
          ON CONFLICT (id) DO NOTHING
-         RETURNING id, title, source, category, time, servings, image, description, ingredients`,
-        [recipe.id, recipe.title.trim(), recipe.source.trim(), recipe.category.trim(), recipe.time, recipe.servings, recipe.image, recipe.description, JSON.stringify(recipe.ingredients), req.recipeListSession!.user.id],
+         RETURNING id, title, source, category, time, servings, image, description, instructions, ingredients`,
+        [recipe.id, recipe.title.trim(), recipe.source.trim(), recipe.category.trim(), recipe.time, recipe.servings, recipe.image, recipe.description, recipe.instructions, JSON.stringify(recipe.ingredients), req.recipeListSession!.user.id],
       )
       if (!result.rowCount) return res.status(409).json({ error: 'A recipe with this ID already exists' })
       res.status(201).json(result.rows[0])

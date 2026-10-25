@@ -14,16 +14,16 @@ vi.mock('../../src/profileStorage', () => ({ loadProfile: mocks.loadProfile, sav
 vi.mock('../../src/recipeStorage', () => ({ loadCurrentUserRole: mocks.loadCurrentUserRole, loadSharedRecipes: mocks.loadSharedRecipes, insertSharedRecipe: mocks.insertSharedRecipe }))
 
 const shared: Recipe[] = [
-  { id: 'chicken-meal', title: 'Chicken and Rice', source: 'Test Kitchen', category: 'Dinner', time: 25, servings: 2, image: '', description: 'A simple dinner.', ingredients: [{ name: 'ground chicken', amount: '1 lb' }, { name: 'rice', amount: '1 cup' }, { name: 'lemon', amount: '1' }] },
-  { id: 'soup', title: 'Tomato Soup', source: 'Test Kitchen', category: 'Lunch', time: 20, servings: 2, image: '', description: 'Tomato soup.', ingredients: [{ name: 'tomatoes', amount: '4' }, { name: 'cream', amount: '1 cup' }] },
+  { id: 'chicken-meal', title: 'Chicken and Rice', source: 'Test Kitchen', category: 'Dinner', time: 25, servings: 2, image: '', description: 'A simple dinner.', instructions: 'Cook rice.\nBrown chicken.', ingredients: [{ name: 'ground chicken', amount: '1 lb' }, { name: 'rice', amount: '1 cup' }, { name: 'lemon', amount: '1' }] },
+  { id: 'soup', title: 'Tomato Soup', source: 'Test Kitchen', category: 'Lunch', time: 20, servings: 2, image: '', description: 'Tomato soup.', instructions: '', ingredients: [{ name: 'tomatoes', amount: '4' }, { name: 'cream', amount: '1 cup' }, { name: 'RICE', amount: '1 cup' }] },
 ]
-const userData = (): AppData => ({ recipes: [], pantry: ['chicken tenders', 'rice'], shopping: [{ id: 'salt', name: 'salt', checked: false }, { id: 'oats', name: 'oats', checked: true }] })
+const userData = (): AppData => ({ recipes: [], pantry: [{ name: 'chicken tenders', amount: '' }, { name: 'rice', amount: '' }], shopping: [{ id: 'salt', name: 'salt', checked: false }, { id: 'oats', name: 'oats', checked: true }] })
 
-async function mountReady(initial = userData()) {
+async function mountReady(initial = userData(), recipes = shared) {
   mocks.apiRequest.mockResolvedValue({ user: { id: 'user-1', email: 'alex@example.com', twoFactorEnabled: true }, role: 'member', needsMfaReauthentication: false })
   mocks.loadProfile.mockResolvedValue(initial)
   mocks.loadCurrentUserRole.mockResolvedValue('member')
-  mocks.loadSharedRecipes.mockResolvedValue(shared)
+  mocks.loadSharedRecipes.mockResolvedValue(recipes)
   mocks.saveProfile.mockResolvedValue(undefined)
   const result = render(<App />)
   await screen.findByRole('heading', { name: 'Your kitchen, sorted.' })
@@ -78,7 +78,7 @@ describe('application session and profile flow', () => {
     await user.click(screen.getByRole('button', { name: 'Add item' }))
     await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalled())
     const newest = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData
-    expect(newest.pantry).toContain('parsley')
+    expect(newest.pantry).toContainEqual({ name: 'parsley', amount: '' })
     await user.click(screen.getByRole('button', { name: 'Sign out' }))
     await waitFor(() => expect(mocks.signOut).toHaveBeenCalled())
     firstApp.unmount()
@@ -104,6 +104,13 @@ describe('pantry, recipes, and shopping list flows', () => {
     const user = userEvent.setup()
     await mountReady()
     await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
+    expect(screen.getByText('ALL RECIPE INGREDIENTS')).toBeInTheDocument()
+    const catalog = document.querySelector('.pantry-catalog')!
+    expect(Array.from(catalog.querySelectorAll('li > span:first-child')).map((item) => item.textContent)).toContain('rice')
+    expect(Array.from(catalog.querySelectorAll('li > span:first-child')).filter((item) => item.textContent?.toLowerCase() === 'rice')).toHaveLength(1)
+    await user.click(screen.getAllByRole('button', { name: 'Add to pantry' })[0]!)
+    expect(await screen.findAllByText(/Tracked/)).toHaveLength(2)
+    expect(screen.getByLabelText('Amount on hand')).toHaveAttribute('maxLength', '120')
     await user.type(screen.getByLabelText('Add pantry ingredient'), 'Rice')
     await user.click(screen.getByRole('button', { name: 'Add item' }))
     expect(await screen.findByRole('status')).toHaveTextContent('Rice is already in your pantry')
@@ -111,6 +118,10 @@ describe('pantry, recipes, and shopping list flows', () => {
     await user.type(screen.getByLabelText('Add pantry ingredient'), 'parsley')
     await user.click(screen.getByRole('button', { name: 'Add item' }))
     expect(await screen.findByText('parsley')).toBeInTheDocument()
+    const amount = screen.getByLabelText('parsley amount on hand')
+    expect(amount).toHaveAttribute('maxLength', '120')
+    await user.type(amount, '2 bunches')
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ pantry: expect.arrayContaining([{ name: 'parsley', amount: '2 bunches' }]) })))
     await user.click(screen.getByRole('button', { name: 'Remove parsley from pantry' }))
     expect(screen.queryByText('parsley')).not.toBeInTheDocument()
   })
@@ -147,5 +158,35 @@ describe('pantry, recipes, and shopping list flows', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('1 item added to your shopping list')
     await user.click(screen.getAllByRole('button', { name: 'Shopping list' })[0]!)
     expect(await screen.findByText('lemon')).toBeInTheDocument()
+  })
+
+  it('shows multiline recipe instructions in details and saves entered instructions', async () => {
+    const user = userEvent.setup()
+    await mountReady()
+    await user.click(await screen.findByRole('button', { name: 'View Chicken and Rice' }))
+    expect(screen.getByRole('heading', { name: 'Instructions' }).parentElement).toHaveTextContent('Cook rice. Brown chicken.')
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: /Add recipe/ }))
+    await user.type(screen.getByRole('textbox', { name: 'Recipe name' }), 'Quick rice')
+    await user.type(screen.getByRole('textbox', { name: /Ingredients/ }), 'rice | 1 cup')
+    await user.type(screen.getByRole('textbox', { name: 'Instructions' }), 'Rinse rice.\nCook until tender.')
+    await user.click(screen.getByRole('button', { name: 'Save recipe' }))
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalled())
+    const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData
+    expect(saved.recipes[0]?.instructions).toBe('Rinse rice.\nCook until tender.')
+  })
+
+  it('marks each repeated recipe ingredient according to its own required quantity', async () => {
+    const user = userEvent.setup()
+    const recipe: Recipe = {
+      ...shared[0]!,
+      ingredients: [{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '3 cups' }],
+    }
+    await mountReady({ ...userData(), pantry: [{ name: 'rice', amount: '2 cups' }] }, [recipe])
+    await user.click(await screen.findByRole('button', { name: 'View Chicken and Rice' }))
+    const ingredients = screen.getAllByRole('listitem').filter((item) => item.closest('.detail-ingredients'))
+    expect(ingredients).toHaveLength(2)
+    expect(ingredients[0]).toHaveClass('available')
+    expect(ingredients[1]).not.toHaveClass('available')
   })
 })
