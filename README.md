@@ -81,7 +81,15 @@ Open `http://localhost:5173`. The Vite development server proxies API requests t
 
 ## Tests
 
-Run the repository test suite with `npm test`. The tests cover client utilities, storage, UI and authentication flows, plus server validation, auth policy, migrations, admin operations, and HTTP routes. They use offline fakes and do not require `.env` or a PostgreSQL service.
+Run the repository test suite with `npm test`. The default suite covers client utilities, storage, UI and authentication flows, plus server validation, auth policy, migrations, admin operations, and HTTP routes. It uses offline fakes and does not require `.env` or a PostgreSQL service.
+
+The Better Auth/PostgreSQL migration integration suite is opt-in. Run it only against a dedicated disposable database whose name includes `test` as a delimited word; it recreates that database's `public` schema:
+
+```sh
+TEST_DATABASE_URL=postgres://.../recipelist_migration_test \
+TEST_DATABASE_ALLOW_SCHEMA_RESET=1 \
+npm test -- tests/server/migrations.postgres.test.ts
+```
 
 For related checks, use `npm run test:watch` while developing, `npm run test:types` to type-check the tests, or `npm run test:coverage` to generate a coverage report.
 

@@ -1,9 +1,24 @@
 -- Convert app references left as text by earlier CREATE TABLE IF NOT EXISTS runs.
 -- Validate the complete expected shape before changing any columns.
+CREATE FUNCTION pg_temp.auth_reference_uuid_is_valid(value text)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $function$
+BEGIN
+  PERFORM value::uuid;
+  RETURN true;
+EXCEPTION WHEN invalid_text_representation THEN
+  RETURN false;
+END;
+$function$;
+
 DO $$
 DECLARE
   expected record;
   actual_type text;
+  parent_type text;
   invalid_value text;
 BEGIN
   FOR expected IN
@@ -23,42 +38,53 @@ BEGIN
     IF actual_type NOT IN ('text', 'uuid') THEN
       RAISE EXCEPTION 'Cannot apply UUID auth reference migration: public.%.% has unsupported type %, expected text or uuid', expected.table_name, expected.column_name, actual_type;
     END IF;
+
+    SELECT c.data_type INTO parent_type FROM information_schema.columns c
+      WHERE c.table_schema='public' AND c.table_name=expected.target_table AND c.column_name='id';
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Cannot apply UUID auth reference migration: expected parent column public.%.id is missing', expected.target_table;
+    END IF;
+    IF parent_type <> 'uuid' THEN
+      RAISE EXCEPTION 'Cannot apply UUID auth reference migration: parent key public.%.id has unsupported type %, expected uuid', expected.target_table, parent_type;
+    END IF;
   END LOOP;
 
-  -- Check syntax before casts; compare against parent UUIDs after casting so
-  -- canonical uppercase spellings are accepted as the same UUID value.
+  -- Use PostgreSQL's UUID parser so any accepted UUID input form converts.
+  -- Compare against parent UUIDs after parsing to catch orphaned references.
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='user_roles' AND column_name='user_id') = 'text' THEN
-    SELECT user_id INTO invalid_value FROM user_roles WHERE user_id IS NOT NULL AND user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1;
+    SELECT user_id INTO invalid_value FROM user_roles WHERE user_id IS NOT NULL AND NOT pg_temp.auth_reference_uuid_is_valid(user_id) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_roles.user_id to uuid: invalid value %', invalid_value; END IF;
     SELECT r.user_id INTO invalid_value FROM user_roles r WHERE NOT EXISTS (SELECT 1 FROM "user" u WHERE u.id = r.user_id::uuid) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_roles.user_id to uuid: orphaned value %', invalid_value; END IF;
   END IF;
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='user_profiles' AND column_name='user_id') = 'text' THEN
-    SELECT user_id INTO invalid_value FROM user_profiles WHERE user_id IS NOT NULL AND user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1;
+    SELECT user_id INTO invalid_value FROM user_profiles WHERE user_id IS NOT NULL AND NOT pg_temp.auth_reference_uuid_is_valid(user_id) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_profiles.user_id to uuid: invalid value %', invalid_value; END IF;
     SELECT r.user_id INTO invalid_value FROM user_profiles r WHERE NOT EXISTS (SELECT 1 FROM "user" u WHERE u.id = r.user_id::uuid) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_profiles.user_id to uuid: orphaned value %', invalid_value; END IF;
   END IF;
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='user_mfa_sessions' AND column_name='session_id') = 'text' THEN
-    SELECT session_id INTO invalid_value FROM user_mfa_sessions WHERE session_id IS NOT NULL AND session_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1;
+    SELECT session_id INTO invalid_value FROM user_mfa_sessions WHERE session_id IS NOT NULL AND NOT pg_temp.auth_reference_uuid_is_valid(session_id) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_mfa_sessions.session_id to uuid: invalid value %', invalid_value; END IF;
     SELECT m.session_id INTO invalid_value FROM user_mfa_sessions m WHERE NOT EXISTS (SELECT 1 FROM "session" s WHERE s.id = m.session_id::uuid) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_mfa_sessions.session_id to uuid: orphaned value %', invalid_value; END IF;
   END IF;
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='user_mfa_sessions' AND column_name='user_id') = 'text' THEN
-    SELECT user_id INTO invalid_value FROM user_mfa_sessions WHERE user_id IS NOT NULL AND user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1;
+    SELECT user_id INTO invalid_value FROM user_mfa_sessions WHERE user_id IS NOT NULL AND NOT pg_temp.auth_reference_uuid_is_valid(user_id) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_mfa_sessions.user_id to uuid: invalid value %', invalid_value; END IF;
     SELECT m.user_id INTO invalid_value FROM user_mfa_sessions m WHERE NOT EXISTS (SELECT 1 FROM "user" u WHERE u.id = m.user_id::uuid) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert user_mfa_sessions.user_id to uuid: orphaned value %', invalid_value; END IF;
   END IF;
   IF (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='recipes' AND column_name='created_by') = 'text' THEN
-    SELECT created_by INTO invalid_value FROM recipes WHERE created_by IS NOT NULL AND created_by !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1;
+    SELECT created_by INTO invalid_value FROM recipes WHERE created_by IS NOT NULL AND NOT pg_temp.auth_reference_uuid_is_valid(created_by) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert recipes.created_by to uuid: invalid value %', invalid_value; END IF;
     SELECT r.created_by INTO invalid_value FROM recipes r WHERE r.created_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "user" u WHERE u.id = r.created_by::uuid) LIMIT 1;
     IF FOUND THEN RAISE EXCEPTION 'Cannot convert recipes.created_by to uuid: orphaned value %', invalid_value; END IF;
   END IF;
 END;
 $$;
+
+DROP FUNCTION pg_temp.auth_reference_uuid_is_valid(text);
 
 DO $$
 DECLARE
