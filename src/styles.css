@@ -494,7 +494,7 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
 .detail-instructions { margin: 16px 0 20px; padding: 14px 16px; border: 1px solid #e7ebe5; border-radius: 12px; background: #fbfcfa; }
 .detail-instructions h3 { margin: 4px 0 8px; color: #455347; font: 700 13px 'Manrope', sans-serif; }
 .detail-instructions p { margin: 0; color: #59665c; font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
-.detail-instructions .detail-instructions-empty { color: #9da49a; font-style: italic; }
+.detail-instructions .detail-instructions-empty { color: #59665c; font-style: italic; }
 .pantry-items, .pantry-catalog { list-style: none; padding: 0; margin: 1rem 0; }
 .pantry-items li, .pantry-catalog li { display: flex; align-items: center; gap: .75rem; padding: .65rem 0; border-bottom: 1px solid var(--line, #e8e8e3); }
 .pantry-items li { flex-wrap: wrap; }
@@ -505,5 +505,5 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
 .pantry-catalog li > .pantry-tracked, .pantry-catalog li > button { margin-left: auto; }
 .pantry-catalog .pantry-tracked { max-width: 70%; color: #59665c; font-size: 10px; overflow-wrap: anywhere; text-align: right; }
 @media (max-width: 600px) {
-  .pantry-catalog .pantry-tracked { display: block; flex: 1 0 100%; max-width: none; margin-left: 0; font-size: 9px; line-height: 1.4; text-align: left; }
+  .pantry-catalog .pantry-tracked { display: block; flex: 1 0 100%; max-width: none; margin-left: 0; font-size: 12px; line-height: 1.4; text-align: left; }
 }

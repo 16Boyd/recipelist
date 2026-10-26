@@ -80,7 +80,7 @@ describe('recipe matching and construction', () => {
     const original = recipe('poultry-only', 'Chicken dinner', [{ name: 'Ground chicken', amount: '1 lb' }])
     expect(matchRecipes([original], [{ name: 'Chicken tenders', amount: '' }])[0]).toMatchObject({ available: original.ingredients, missing: [], percent: 100 })
   })
-  it('uses comparable pantry quantities and falls back to name presence when quantities cannot be compared', () => {
+  it('uses comparable pantry quantities and preserves name matching for blank legacy amounts', () => {
     const row = recipe('qty', 'Quantity', [
       { name: 'rice', amount: '2 cups' }, { name: 'oil', amount: '3 tbsp' },
       { name: 'salt', amount: '1/2 tsp' }, { name: 'cans', amount: '2 cans' },
@@ -92,7 +92,7 @@ describe('recipe matching and construction', () => {
     expect(result.available.map((item) => item.name)).toEqual(['oil', 'salt'])
     expect(result.missing.map((item) => item.name)).toEqual(['rice', 'cans'])
     expect(matchRecipes([row], [{ name: 'rice', amount: '' }])[0]?.available).toContain(row.ingredients[0])
-    expect(matchRecipes([recipe('unknown-unit', 'Unknown unit', [{ name: 'rice', amount: '2 scoops' }])], [{ name: 'rice', amount: '1 cup' }])[0]?.available).toHaveLength(1)
+    expect(matchRecipes([recipe('unknown-unit', 'Unknown unit', [{ name: 'rice', amount: '2 scoops' }])], [{ name: 'rice', amount: '1 cup' }])[0]?.missing).toHaveLength(1)
   })
   it('compares unknown units by normalized unit name and quantity', () => {
     const row = recipe('unknown-unit-quantity', 'Unknown unit quantity', [{ name: 'tofu', amount: '2 blocks' }])
@@ -158,7 +158,7 @@ describe('recipe matching and construction', () => {
     const leavesRecipe = recipe('leaves', 'Salad', [{ name: 'lettuce', amount: '2 leaves' }])
     expect(matchRecipes([leavesRecipe], [{ name: 'lettuce', amount: '1 leaf' }])[0]?.missing).toEqual(leavesRecipe.ingredients)
   })
-  it('parses mixed Unicode fractions and ignores invalid quantities instead of treating them as zero', () => {
+  it('parses mixed Unicode fractions and rejects invalid quantities for measurable requirements', () => {
     const row = recipe('fractions', 'Fractions', [
       { name: 'rice', amount: '1½ cups' },
       { name: 'flour', amount: '2/3 cup' },
@@ -169,12 +169,32 @@ describe('recipe matching and construction', () => {
       { name: 'flour', amount: '1/0 cup' },
       { name: 'beans', amount: '1 package' },
     ])[0]!
-    expect(result.available.map((item) => item.name)).toEqual(['rice', 'flour'])
-    expect(result.missing.map((item) => item.name)).toEqual(['beans'])
+    expect(result.available.map((item) => item.name)).toEqual(['rice'])
+    expect(result.missing.map((item) => item.name)).toEqual(['flour', 'beans'])
     expect(matchRecipes([row], [{ name: 'rice', amount: '1 cup' }])[0]?.missing).toContain(row.ingredients[0])
-    expect(matchRecipes([row], [{ name: 'rice', amount: '1/0 cups' }])[0]?.available).toContain(row.ingredients[0])
-    expect(matchRecipes([row], [{ name: 'rice', amount: '999999999999999999999999999999999999999999999999999999999 cups' }])[0]?.available).toContain(row.ingredients[0])
-    expect(matchRecipes([row], [{ name: 'rice', amount: `${'1' + '0'.repeat(307)} cups` }])[0]?.available).toContain(row.ingredients[0])
+    expect(matchRecipes([recipe('eighths', 'Rice', [{ name: 'rice', amount: '2 cups' }])], [{ name: 'rice', amount: '⅛ cup' }])[0]?.missing).toHaveLength(1)
+    expect(matchRecipes([recipe('mixed-eighths', 'Rice', [{ name: 'rice', amount: '1 1/8 cups' }])], [{ name: 'rice', amount: '1⅛ cup' }])[0]?.available).toHaveLength(1)
+    expect(matchRecipes([recipe('sixths', 'Rice', [{ name: 'rice', amount: '5/6 cup' }])], [{ name: 'rice', amount: '⅚ cup' }])[0]?.available).toHaveLength(1)
+  })
+  it.each([
+    ['½', '1/2'], ['⅓', '1/3'], ['⅔', '2/3'], ['¼', '1/4'], ['¾', '3/4'],
+    ['⅕', '1/5'], ['⅖', '2/5'], ['⅗', '3/5'], ['⅘', '4/5'],
+    ['⅙', '1/6'], ['⅚', '5/6'], ['⅛', '1/8'], ['⅜', '3/8'], ['⅝', '5/8'], ['⅞', '7/8'],
+    ['⅐', '1/7'], ['⅑', '1/9'], ['⅒', '1/10'],
+  ])('parses the Unicode fraction %s as %s', (glyph, fraction) => {
+    const row = recipe('unicode-fraction', 'Fraction', [{ name: 'rice', amount: `${fraction} cup` }])
+    expect(matchRecipes([row], [{ name: 'rice', amount: `${glyph} cup` }])[0]?.available).toEqual(row.ingredients)
+  })
+  it('does not treat malformed nonblank stock as enough for measurable requirements', () => {
+    const row = recipe('malformed-stock', 'Rice', [{ name: 'rice', amount: '2 cups' }])
+    for (const amount of [
+      '⅛ cup', 'one cup', '2-3 cups', '1/0 cup',
+      `${'9'.repeat(400)} cups`,
+    ]) {
+      expect(matchRecipes([row], [{ name: 'rice', amount }])[0]?.missing, amount).toEqual(row.ingredients)
+    }
+    expect(matchRecipes([recipe('unmeasurable', 'Rice', [{ name: 'rice', amount: 'to taste' }])], [{ name: 'rice', amount: 'one cup' }])[0]?.available).toHaveLength(1)
+    expect(matchRecipes([row], [{ name: 'rice', amount: '' }])[0]?.available).toEqual(row.ingredients)
   })
   it('sorts by match percentage, then missing count, then cooking time', () => {
     const rows = [recipe('slow', 'Slow', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 60), recipe('fast', 'Fast', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 10), recipe('more-missing', 'More missing', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }, { name: 'salt', amount: '' }], 1)]

@@ -44,6 +44,7 @@ export function validateRecipeInstructions(value: unknown): value is string {
  */
 export function validateRecipe(value: unknown): value is RecipeInput
 export function validateRecipe(value: unknown, requireInstructions: false): value is Omit<RecipeInput, 'instructions'> & { instructions?: string }
+/** Validate recipe fields with required or legacy-optional instructions. */
 export function validateRecipe(value: unknown, requireInstructions = true): value is RecipeInput {
   if (!isRecord(value)) return false
   return isText(value.id, 120) && value.id.length > 0

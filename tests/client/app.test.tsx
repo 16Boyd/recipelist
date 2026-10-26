@@ -143,9 +143,13 @@ describe('pantry, recipes, and shopping list flows', () => {
     expect(await screen.findAllByText(/Tracked/)).toHaveLength(2)
     expect(screen.getByLabelText('Amount on hand')).toHaveAttribute('maxLength', '120')
     await user.type(screen.getByLabelText('Add pantry ingredient'), 'Rice')
+    await user.type(screen.getByLabelText('Amount on hand'), '2 cups')
     await user.click(screen.getByRole('button', { name: 'Add item' }))
     expect(await screen.findByRole('status')).toHaveTextContent('Rice is already in your pantry')
+    expect(screen.getByLabelText('Add pantry ingredient')).toHaveValue('Rice')
+    expect(screen.getByLabelText('Amount on hand')).toHaveValue('2 cups')
     await user.clear(screen.getByLabelText('Add pantry ingredient'))
+    await user.clear(screen.getByLabelText('Amount on hand'))
     await user.type(screen.getByLabelText('Add pantry ingredient'), 'parsley')
     await user.click(screen.getByRole('button', { name: 'Add item' }))
     expect(await screen.findByText('parsley')).toBeInTheDocument()
@@ -284,6 +288,23 @@ describe('pantry, recipes, and shopping list flows', () => {
     await user.click(screen.getByRole('button', { name: 'Save instructions' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Recipe instructions have already been added')
     expect(screen.getByRole('textbox', { name: 'Recipe instructions' })).toHaveValue(draft)
+  })
+
+  it('refreshes a shared recipe after a conflicting instruction save', async () => {
+    const user = userEvent.setup()
+    const blankRecipe = { ...shared[1]!, instructions: '' }
+    const completedRecipe = { ...blankRecipe, instructions: 'Another admin added these steps.' }
+    await mountReady(userData(), [blankRecipe], 'admin')
+    mocks.loadSharedRecipes.mockResolvedValueOnce([completedRecipe])
+    mocks.updateSharedRecipeInstructions.mockRejectedValueOnce(new Error('Recipe instructions have already been added'))
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), 'My draft steps.')
+    await user.click(screen.getByRole('button', { name: 'Save instructions' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Recipe instructions have already been added')
+    expect(screen.getByText('Another admin added these steps.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add instructions' })).not.toBeInTheDocument()
   })
 
   it('closes recipe details when the signed-in account changes', async () => {

@@ -55,9 +55,9 @@ const proteinFormTerms = new Set([
   'fresh', 'frozen', 'raw', 'cooked',
 ])
 
-/** Return an animal-protein family only when the ingredient names one unambiguous protein and no product terms. */
-function proteinFamily(value: string): string | undefined {
-  const words = normalizeName(value).split(' ')
+/** Return an animal-protein family only when normalized words name one unambiguous protein and no product terms. */
+function proteinFamilyFromNormalizedName(normalizedName: string): string | undefined {
+  const words = normalizedName.split(' ')
   if (words.some((word) => nonProteinProductTerms.has(word))) return undefined
 
   const matched = Object.entries(proteinFamilies)
@@ -76,8 +76,8 @@ export function ingredientNamesEquivalent(first: string, second: string): boolea
   const normalizedSecond = normalizeName(second)
   if (!normalizedFirst || !normalizedSecond) return false
   if (normalizedFirst === normalizedSecond) return true
-  const firstFamily = proteinFamily(normalizedFirst)
-  return Boolean(firstFamily && firstFamily === proteinFamily(normalizedSecond))
+  const firstFamily = proteinFamilyFromNormalizedName(normalizedFirst)
+  return Boolean(firstFamily && firstFamily === proteinFamilyFromNormalizedName(normalizedSecond))
 }
 
 /** Check that an unknown value contains the required recipe fields and non-empty ingredients. */
@@ -129,6 +129,14 @@ export function parseAppData(value: unknown): AppData {
   }
 }
 
+const vulgarFractions: Readonly<Record<string, string>> = {
+  '½': '1/2', '⅓': '1/3', '⅔': '2/3', '¼': '1/4', '¾': '3/4',
+  '⅕': '1/5', '⅖': '2/5', '⅗': '3/5', '⅘': '4/5',
+  '⅙': '1/6', '⅚': '5/6', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8',
+  '⅐': '1/7', '⅑': '1/9', '⅒': '1/10',
+}
+const quantityPattern = /^((?:\d+\/\d+|\d+(?:\.\d+)?))(?:\s+((?:\d+\/\d+|\d+(?:\.\d+)?)))?\s*([\p{L}]+)?$/u
+
 /**
  * Parse supported nonnegative numbers and fractions into comparable quantities.
  * Volumes use milliliters, weights use grams, and count units remain distinct.
@@ -138,10 +146,8 @@ export function parseAppData(value: unknown): AppData {
  * or nonfinite amounts.
  */
 function parseQuantity(value: string): { value: number; dimension: string } | undefined {
-  const fractions: Record<string, string> = { '½': '1/2', '¼': '1/4', '¾': '3/4', '⅓': '1/3', '⅔': '2/3' }
-  const normalized = value.trim().toLocaleLowerCase().replace(/[½¼¾⅓⅔]/g, (fraction) => ` ${fractions[fraction]}`).trim()
-  const number = '(?:\\d+\\/\\d+|\\d+(?:\\.\\d+)?)'
-  const match = normalized.match(new RegExp(`^(${number})(?:\\s+(${number}))?\\s*([\\p{L}]+)?$`, 'u'))
+  const normalized = value.trim().toLocaleLowerCase().replace(/[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞⅐⅑⅒]/g, (fraction) => ` ${vulgarFractions[fraction]}`).trim()
+  const match = normalized.match(quantityPattern)
   if (!match) return undefined
   /** Parse a nonnegative number or fraction, returning zero for absent input and undefined for invalid values. */
   const parseNumber = (raw?: string): number | undefined => {
@@ -186,19 +192,46 @@ function parseQuantity(value: string): { value: number; dimension: string } | un
  * ingredients, then shorter cooking time. Recipes without ingredients score zero.
  * Pool comparable quantities for equivalent names and consume covered requirements
  * in ingredient order, allowing a relative tolerance of 1e-5 for conversion rounding.
- * Use name presence for unparseable requirements, or when no comparable stock
- * exists and an amount is unparseable or uses an unknown unit.
+ * Use name presence for unparseable requirements or blank legacy pantry amounts
+ * when no comparable stock exists; malformed nonblank amounts do not satisfy a
+ * measurable requirement.
  * Each recipe is evaluated independently without changing the pantry or recipes.
  */
 export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
+  const pantryRows = pantry.map((item, index) => {
+    const normalizedName = normalizeName(item.name)
+    return {
+      index,
+      normalizedName,
+      family: proteinFamilyFromNormalizedName(normalizedName),
+      quantity: parseQuantity(item.amount),
+      hasBlankAmount: !item.amount.trim(),
+    }
+  })
+  const pantryByName = new Map<string, typeof pantryRows[number][]>()
+  const pantryByFamily = new Map<string, typeof pantryRows[number][]>()
+  for (const row of pantryRows) {
+    const namedRows = pantryByName.get(row.normalizedName) ?? []
+    namedRows.push(row)
+    pantryByName.set(row.normalizedName, namedRows)
+    if (row.family) {
+      const familyRows = pantryByFamily.get(row.family) ?? []
+      familyRows.push(row)
+      pantryByFamily.set(row.family, familyRows)
+    }
+  }
+
   return recipes.map((recipe) => {
     const available: Ingredient[] = []
     const missing: Ingredient[] = []
-    const remainingAmounts = pantry.map((item) => parseQuantity(item.amount)?.value)
+    const remainingAmounts = new Map<number, number>()
     recipe.ingredients.forEach((ingredient) => {
       const required = parseQuantity(ingredient.amount)
-      const equivalent = pantry.map((item, index) => ({ item, index, quantity: parseQuantity(item.amount) }))
-        .filter(({ item }) => ingredientNamesEquivalent(ingredient.name, item.name))
+      const normalizedName = normalizeName(ingredient.name)
+      const family = proteinFamilyFromNormalizedName(normalizedName)
+      const equivalent = family
+        ? pantryByFamily.get(family) ?? []
+        : pantryByName.get(normalizedName) ?? []
       if (!equivalent.length) {
         missing.push(ingredient)
         return
@@ -209,21 +242,20 @@ export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMat
       }
 
       const comparable = equivalent.filter(({ quantity }) => quantity?.dimension === required.dimension)
-      const total = comparable.reduce((sum, { index }) => sum + (remainingAmounts[index] ?? 0), 0)
+      const total = comparable.reduce((sum, { index, quantity }) => sum + (remainingAmounts.get(index) ?? quantity?.value ?? 0), 0)
       const tolerance = Math.max(total, required.value) * 1e-5
       if (total + tolerance >= required.value) {
         let needed = required.value
-        for (const { index } of comparable) {
-          const remaining = remainingAmounts[index] ?? 0
+        for (const { index, quantity } of comparable) {
+          const remaining = remainingAmounts.get(index) ?? quantity?.value ?? 0
           const consumed = Math.min(remaining, needed)
-          remainingAmounts[index] = Math.max(0, remaining - consumed)
+          remainingAmounts.set(index, Math.max(0, remaining - consumed))
           needed -= consumed
           if (needed <= 0) break
         }
         available.push(ingredient)
-      } else if (!comparable.length && equivalent.some(({ quantity }) => !quantity
-        || quantity?.dimension.startsWith('unknown:') || required.dimension.startsWith('unknown:'))) {
-        // Preserve legacy name-presence matching when pantry and recipe units cannot be compared.
+      } else if (!comparable.length && equivalent.some(({ hasBlankAmount }) => hasBlankAmount)) {
+        // Preserve name-presence matching for legacy pantry entries without tracked amounts.
         available.push(ingredient)
       } else {
         missing.push(ingredient)

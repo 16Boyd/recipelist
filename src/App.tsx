@@ -361,6 +361,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     const sharedIds = new Set(sharedRecipes.map((recipe) => recipe.id))
     return [...sharedRecipes, ...data.recipes.filter((recipe) => !sharedIds.has(recipe.id))]
   }, [data.recipes, sharedRecipes])
+  const recipeIngredientCatalog = useMemo(() => getRecipeIngredientCatalog(recipes), [recipes])
   const matches = useMemo(() => matchRecipes(recipes, data.pantry), [recipes, data.pantry])
   const filteredMatches = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
@@ -385,11 +386,11 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     const value = pantryEntry.trim()
     if (!value) return
     if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(value))) {
-      setToast(`${value} is already in your pantry`)
-    } else {
-      updateData((current) => ({ ...current, pantry: [...current.pantry, { name: value, amount: pantryAmount.trim() }].sort((a, b) => a.name.localeCompare(b.name)) }))
-      setToast(`${value} added to your pantry`)
+      setToast(`${value} is already in your pantry. Update its amount in the list below.`)
+      return
     }
+    updateData((current) => ({ ...current, pantry: [...current.pantry, { name: value, amount: pantryAmount.trim() }].sort((a, b) => a.name.localeCompare(b.name)) }))
+    setToast(`${value} added to your pantry`)
     setPantryEntry('')
     setPantryAmount('')
   }
@@ -503,7 +504,20 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     if (!instructions.trim() || instructionCharacterCount(instructions) > 12000) throw new Error('Enter instructions of 12,000 characters or fewer.')
     if (source === 'shared') {
       if (role !== 'admin' || roleUserId !== user.id || roleError) throw new Error('Admin access could not be verified.')
-      const updated = await updateSharedRecipeInstructions(recipe.id, instructions)
+      let updated: { id: string; instructions: string }
+      try {
+        updated = await updateSharedRecipeInstructions(recipe.id, instructions)
+      } catch (error) {
+        try {
+          const refreshed = await loadSharedRecipes()
+          setSharedRecipes(refreshed)
+          const latest = refreshed.find((item) => item.id === recipe.id)
+          if (latest) setSelectedRecipe((current) => current?.id === latest.id ? latest : current)
+        } catch {
+          // Preserve the original save error when refreshing the catalog also fails.
+        }
+        throw error
+      }
       setSharedRecipes((current) => current.map((item) => item.id === updated.id ? { ...item, instructions: updated.instructions } : item))
       setSelectedRecipe((current) => current?.id === updated.id ? { ...current, instructions: updated.instructions } : current)
     } else {
@@ -614,7 +628,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
             onShowPantry={() => setSection('pantry')}
           />}
           {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={openRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
-          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={getRecipeIngredientCatalog(recipes)} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={openRecipe} onAddMissing={addMissing} />}
+          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={recipeIngredientCatalog} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={openRecipe} onAddMissing={addMissing} />}
           {section === 'shopping' && <ShoppingView items={data.shopping} entry={shoppingEntry} onEntryChange={setShoppingEntry} onSubmit={addShoppingEntry} onToggle={toggleShoppingItem} onRemove={(id) => updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => item.id !== id) }))} onClearChecked={clearChecked} />}
 
           <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> {saveStatus === 'saved' ? `Saved to ${user.email ?? 'your profile'}` : saveStatus === 'saving' ? 'Saving to your profile…' : 'Could not save to your profile'}</span></footer>
@@ -745,13 +759,23 @@ function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountCha
   pantry: PantryItem[]; catalog: string[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (index: number) => void; onAmountUpdate: (index: number, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
   const cookable = matches.filter((match) => match.missing.length === 0)
+  const pantryByNormalizedName = useMemo(() => {
+    const index = new Map<string, PantryItem[]>()
+    for (const item of pantry) {
+      const key = normalizeName(item.name)
+      const rows = index.get(key)
+      if (rows) rows.push(item)
+      else index.set(key, [item])
+    }
+    return index
+  }, [pantry])
   return <div className="pantry-layout">
     <section className="surface-card pantry-card">
       <div className="surface-heading"><div><div className="section-kicker">WHAT’S ON HAND</div><h2>Your ingredients <span className="pill-count">{pantry.length}</span></h2><p>Add the ingredients you have. We’ll match them to your recipes.</p></div><span className="surface-illustration"><Icon name="basket" size={23} /></span></div>
       <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
       {pantry.length ? <ul className="pantry-items">{pantry.map((item, index) => { const inputId = `pantry-qty-${index}-${normalizeName(item.name).replace(/\s/g, '-')}`; return <li key={`${item.name}-${index}`}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={inputId}>{item.name} amount on hand</label><input id={inputId} aria-label={`${item.name} amount on hand`} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(index, event.target.value)} /><button onClick={() => onRemove(index)} aria-label={`Remove ${item.name} from pantry`}><Icon name="close" size={13} /></button></li> })}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
       <div className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</div><ul className="pantry-catalog">{catalog.map((name) => {
-        const tracked = pantry.filter((item) => normalizeName(item.name) === normalizeName(name))
+        const tracked = pantryByNormalizedName.get(normalizeName(name)) ?? []
         const amounts = tracked.map((item) => item.amount.trim()).filter(Boolean)
         const trackedLabel = tracked.length > 1
           ? `Tracked (${tracked.length} entries)${amounts.length ? ` · ${amounts.join('; ')}` : ''}`
@@ -885,10 +909,11 @@ function RecipeDetails({ recipe, source, match, canAddInstructions, onSaveInstru
         {canAddInstructions && !editingInstructions && <button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(true) }}>Add instructions</button>}
         {editingInstructions && <form className="recipe-form instruction-editor" onSubmit={submitInstructions}>
           <label className="form-field wide"><span>Instructions</span><textarea aria-label="Recipe instructions" autoFocus value={instructionsDraft} onChange={(event) => setInstructionsDraft(event.target.value)} placeholder="Add each cooking step on a new line." rows={6} required /></label>
-          {instructionError && <div className="form-error" role="alert">{instructionError}</div>}
           <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(false) }}>Cancel</button><button className="button button-dark" type="submit" disabled={savingInstructions}>{savingInstructions ? 'Saving…' : 'Save instructions'}</button></div>
         </form>}
-      </>}</section>
+      </>}
+      {instructionError && <div className="form-error" role="alert">{instructionError}</div>}
+    </section>
     {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missing.length ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missing.length ? `${match.missing.length} missing` : 'Ready to cook'}</span></div>}
     <div className="detail-ingredients-heading"><div><span className="section-kicker">THE SHOPPING LIST</span><h3>Ingredients <small>{recipe.ingredients.length}</small></h3></div><button className="text-button" onClick={() => onAddIngredients(recipe)}>Add all to pantry <Icon name="plus" size={15} /></button></div>
     <ul className="detail-ingredients">{recipe.ingredients.map((ingredient, index) => {

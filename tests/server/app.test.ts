@@ -61,7 +61,9 @@ describe('HTTP app factory', () => {
           const instructions = values?.[1]
           const rowIndex = state.recipeRows.findIndex((row) => Boolean(row) && typeof row === 'object' && (row as { id?: unknown }).id === id)
           const current = rowIndex >= 0 ? state.recipeRows[rowIndex] as { id: string; instructions?: string } : undefined
-          if (!current || current.instructions?.trim() || typeof instructions !== 'string') return { rows: [], rowCount: 0 }
+          const acceptsBomWhitespace = sql.includes('\uFEFF')
+          const isSqlWhitespace = (value: string) => [...value].every((character) => /[\t\n\v\f\r ]/.test(character) || (acceptsBomWhitespace && character === '\uFEFF'))
+          if (!current || !isSqlWhitespace(current.instructions ?? '') || typeof instructions !== 'string') return { rows: [], rowCount: 0 }
           const updated = { ...current, instructions }
           state.recipeRows = state.recipeRows.map((row, index) => index === rowIndex ? updated : row)
           return { rows: [{ id: updated.id, instructions: updated.instructions }] as Row[], rowCount: 1 }
@@ -220,6 +222,19 @@ describe('HTTP app factory', () => {
     const conflict = await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ instructions: 'Replace these steps.' }) })
     expect(conflict.status).toBe(409)
     expect(state.recipeRows).toEqual([{ ...recipe, instructions: 'Roast the vegetables.\nServe warm.' }])
+  })
+
+  it('completes shared recipes whose legacy instructions contain only a byte order mark', async () => {
+    state.role = 'admin'
+    state.recipeRows = [{ ...recipe, instructions: '\uFEFF' }]
+    const instructions = 'Brown the chicken.\nServe warm.'
+    const completed = await request('/api/recipes/chicken-soup/instructions', {
+      method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ instructions }),
+    })
+    expect(completed.status).toBe(200)
+    expect(await completed.json()).toEqual({ id: recipe.id, instructions })
+    expect(state.instructionUpdateValues).toEqual([recipe.id, instructions])
+    expect(state.recipeRows).toEqual([{ ...recipe, instructions }])
   })
 
   it('rejects invalid instruction completion and returns 404 for unknown shared recipes', async () => {
