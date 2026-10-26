@@ -101,7 +101,12 @@ function validRecipe(value: unknown): value is Recipe {
       && typeof item.amount === 'string')
 }
 
-/** Validate persisted kitchen data and return its typed form, rejecting incomplete or malformed records. */
+/**
+ * Validate persisted kitchen data, defaulting missing recipe instructions to an
+ * empty string and converting legacy pantry names to entries with empty amounts.
+ *
+ * @throws {Error} If the saved data has an invalid shape or fails field validation.
+ */
 export function parseAppData(value: unknown): AppData {
   if (!value || typeof value !== 'object') throw new Error('Your saved kitchen data has an invalid format.')
   const candidate = value as Partial<AppData>
@@ -124,13 +129,21 @@ export function parseAppData(value: unknown): AppData {
   }
 }
 
-/** Parse a quantity into a comparable base-unit value, retaining normalized unknown units. */
+/**
+ * Parse supported nonnegative numbers and fractions into comparable quantities.
+ * Volumes use milliliters, weights use grams, and count units remain distinct.
+ * Unitless amounts use each; unknown units retain a normalized unit name.
+ *
+ * @returns The quantity and comparison dimension, or undefined for unparseable
+ * or nonfinite amounts.
+ */
 function parseQuantity(value: string): { value: number; dimension: string } | undefined {
   const fractions: Record<string, string> = { '½': '1/2', '¼': '1/4', '¾': '3/4', '⅓': '1/3', '⅔': '2/3' }
   const normalized = value.trim().toLocaleLowerCase().replace(/[½¼¾⅓⅔]/g, (fraction) => ` ${fractions[fraction]}`).trim()
   const number = '(?:\\d+\\/\\d+|\\d+(?:\\.\\d+)?)'
   const match = normalized.match(new RegExp(`^(${number})(?:\\s+(${number}))?\\s*([\\p{L}]+)?$`, 'u'))
   if (!match) return undefined
+  /** Parse a nonnegative number or fraction, returning zero for absent input and undefined for invalid values. */
   const parseNumber = (raw?: string): number | undefined => {
     if (!raw) return 0
     if (!raw.includes('/')) {
@@ -168,7 +181,15 @@ function parseQuantity(value: string): { value: number; dimension: string } | un
   return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
 }
 
-/** Rank recipes by pantry coverage while pooling and consuming measurable stock safely. */
+/**
+ * Return pantry matches ranked by rounded coverage percentage, then fewer missing
+ * ingredients, then shorter cooking time. Recipes without ingredients score zero.
+ * Pool comparable quantities for equivalent names and consume covered requirements
+ * in ingredient order, allowing a relative tolerance of 1e-5 for conversion rounding.
+ * Use name presence for unparseable requirements, or when no comparable stock
+ * exists and an amount is unparseable or uses an unknown unit.
+ * Each recipe is evaluated independently without changing the pantry or recipes.
+ */
 export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
   return recipes.map((recipe) => {
     const available: Ingredient[] = []

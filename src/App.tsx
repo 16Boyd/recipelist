@@ -16,7 +16,7 @@ function instructionCharacterCount(value: string): number {
   return Array.from(value).length
 }
 
-/** Build a sorted list of unique ingredient names used by the recipe collection. */
+/** Return sorted ingredient names, deduplicated by normalized name using the first spelling encountered. */
 function getRecipeIngredientCatalog(recipes: Recipe[]): string[] {
   const catalog = new Map<string, string>()
   for (const recipe of recipes) {
@@ -491,7 +491,14 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     }
   }
 
-  /** Add instructions to a blank private recipe or an admin-owned shared recipe. */
+  /**
+   * Add instructions to a blank recipe, requiring verified admin access for shared recipes.
+   * Queue private profile edits or await the shared API update, then refresh the
+   * selected recipe and show a save notice.
+   *
+   * @throws {Error} For blank instructions, more than 12,000 Unicode code points,
+   * unverified shared admin access, or propagated shared update failures.
+   */
   async function addInstructionsToRecipe(recipe: Recipe, source: RecipeSource, instructions: string) {
     if (!instructions.trim() || instructionCharacterCount(instructions) > 12000) throw new Error('Enter instructions of 12,000 characters or fewer.')
     if (source === 'shared') {
@@ -840,14 +847,18 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
   </Modal>
 }
 
-/** Render a recipe’s ingredients and actions for missing items or pantry updates. */
+/** Render recipe instructions and ingredients, with permitted completion of blank instructions and shopping or pantry actions. */
 function RecipeDetails({ recipe, source, match, canAddInstructions, onSaveInstructions, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; source: RecipeSource; match?: RecipeMatch; canAddInstructions: boolean; onSaveInstructions: (recipe: Recipe, source: RecipeSource, instructions: string) => Promise<void>; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
   const [editingInstructions, setEditingInstructions] = useState(false)
   const [instructionsDraft, setInstructionsDraft] = useState(recipe.instructions ?? '')
   const [instructionError, setInstructionError] = useState('')
   const [savingInstructions, setSavingInstructions] = useState(false)
 
-  /** Validate and submit the completion of a blank recipe instruction field. */
+  /**
+   * Validate and submit instructions, closing the editor on success.
+   * Validation and save failures appear in the form and retain the draft;
+   * save errors are caught rather than propagated.
+   */
   async function submitInstructions(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!instructionsDraft.trim()) { setInstructionError('Add instructions to continue.'); return }

@@ -35,7 +35,14 @@ export async function insertSharedRecipe(recipe: Recipe): Promise<void> {
   await apiRequest<void>('/api/recipes', { method: 'POST', body: JSON.stringify(recipe) })
 }
 
-/** Add instructions to a blank shared recipe and validate the response. */
+/**
+ * Add instructions to a blank shared recipe and return the server's ID and text.
+ * The API requires a verified admin and nonblank text of at most 12,000 Unicode
+ * code points; instructions are sent unchanged.
+ *
+ * @throws {Error} For an invalid response shape, or propagated request or JSON
+ * parsing failures, including API rejections for missing recipes or existing instructions.
+ */
 export async function updateSharedRecipeInstructions(id: string, instructions: string): Promise<{ id: string; instructions: string }> {
   const result = await apiRequest<unknown>(`/api/recipes/${encodeURIComponent(id)}/instructions`, {
     method: 'PUT', body: JSON.stringify({ instructions }),

@@ -32,12 +32,16 @@ function withinCodePointLimit(value: string, max: number): boolean {
   return Array.from(value).length <= max
 }
 
-/** Validate nonblank recipe instructions within the persisted text limit. */
+/** Accept nonblank instructions of at most 12,000 Unicode code points, including surrounding whitespace. */
 export function validateRecipeInstructions(value: unknown): value is string {
   return typeof value === 'string' && withinCodePointLimit(value, 12000) && value.trim().length > 0
 }
 
-/** Validate untrusted recipe JSON against field, length, range, and ingredient limits. */
+/**
+ * Validate untrusted recipe JSON against field, length, range, and ingredient limits.
+ * Instructions must be nonblank by default; passing false for requireInstructions
+ * allows missing or blank legacy instructions, retaining the 12,000 code point limit.
+ */
 export function validateRecipe(value: unknown): value is RecipeInput
 export function validateRecipe(value: unknown, requireInstructions: false): value is Omit<RecipeInput, 'instructions'> & { instructions?: string }
 export function validateRecipe(value: unknown, requireInstructions = true): value is RecipeInput {
@@ -59,7 +63,11 @@ export function validateRecipe(value: unknown, requireInstructions = true): valu
       && isText(ingredient.amount, 120))
 }
 
-/** Validate untrusted profile JSON and enforce limits on recipes, pantry, and shopping entries. */
+/**
+ * Validate untrusted profile JSON and enforce limits on recipes, pantry, and shopping entries.
+ * Accept legacy recipes with missing or blank instructions and pantry entries as
+ * either names or objects with amounts; validation does not normalize these values.
+ */
 export function validateAppData(value: unknown): value is AppDataInput {
   if (!isRecord(value) || !Array.isArray(value.recipes) || !Array.isArray(value.pantry) || !Array.isArray(value.shopping)) return false
   return value.recipes.length <= 1000 && value.recipes.every((recipe) => validateRecipe(recipe, false))
