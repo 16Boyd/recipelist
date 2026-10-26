@@ -3,6 +3,13 @@ import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { promoteAdmin, validateAdminEmail } from '../../server/admin-operations.js'
 import { appMigrations, applyAppMigrations, assertSafeMigrationPlan } from '../../server/migration-operations.js'
+import { demoRecipes } from '../../src/data.js'
+
+function migrationFile(version: string): string {
+  const migration = appMigrations.find((candidate) => candidate.version === version)
+  if (!migration) throw new Error(`Missing app migration ${version}`)
+  return migration.file
+}
 
 describe('migration operations', () => {
   it('keeps the app migrations ordered and defines the expected database constraints', async () => {
@@ -11,10 +18,12 @@ describe('migration operations', () => {
       '0002_mfa_session_assurance',
       '0003_auth_foreign_keys_uuid',
       '0004_recipe_instructions',
+      '0005_recipe_instruction_backfill',
     ])
-    const [appSchema, mfaSchema] = await Promise.all(appMigrations.map(({ file }) =>
-      readFile(resolve(process.cwd(), 'server/migrations', file), 'utf8'),
-    ))
+    const [appSchema, mfaSchema] = await Promise.all([
+      migrationFile('0001_app_data_and_recipe_catalog'),
+      migrationFile('0002_mfa_session_assurance'),
+    ].map((file) => readFile(resolve(process.cwd(), 'server/migrations', file), 'utf8')))
     expect(appSchema).toContain("role text NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin'))")
     expect(appSchema).toContain('app_data jsonb NOT NULL')
     expect(appSchema).toContain('time integer NOT NULL CHECK (time BETWEEN 1 AND 1440)')
@@ -28,12 +37,17 @@ describe('migration operations', () => {
     const fkSql = [appSchema, mfaSchema].join('\n').match(/\b(?:user_id|session_id|created_by)\s+\w+(?:\s+NOT NULL)?\s+(?:PRIMARY KEY\s+)?REFERENCES\s+"(?:user|session)"\(id\)/g) ?? []
     expect(fkSql).toHaveLength(5)
     expect(fkSql.every((declaration) => declaration.includes('uuid'))).toBe(true)
-    const upgradeSchema = await readFile(resolve(process.cwd(), 'server/migrations', appMigrations[2].file), 'utf8')
+    const upgradeSchema = await readFile(resolve(process.cwd(), 'server/migrations', migrationFile('0003_auth_foreign_keys_uuid')), 'utf8')
     expect(upgradeSchema).toContain('ALTER COLUMN user_id TYPE uuid')
     expect(upgradeSchema).toContain('ALTER COLUMN session_id TYPE uuid')
-    const instructionsSchema = await readFile(resolve(process.cwd(), 'server/migrations', appMigrations[3]!.file), 'utf8')
+    const instructionsSchema = await readFile(resolve(process.cwd(), 'server/migrations', migrationFile('0004_recipe_instructions')), 'utf8')
     expect(instructionsSchema).toContain("ADD COLUMN IF NOT EXISTS instructions text NOT NULL DEFAULT ''")
     expect(instructionsSchema).toContain('CHECK (length(instructions) <= 12000)')
+    const backfillSchema = await readFile(resolve(process.cwd(), 'server/migrations', migrationFile('0005_recipe_instruction_backfill')), 'utf8')
+    for (const recipe of demoRecipes) {
+      expect(backfillSchema).toContain(`SET instructions = '${recipe.instructions.replaceAll("'", "''")}'\nWHERE id = '${recipe.id}' AND instructions ~ '^[[:space:]]*$';`)
+    }
+    expect(backfillSchema.split("AND instructions ~ '^[[:space:]]*$';").length - 1).toBe(demoRecipes.length)
   })
 
   it('blocks schema problems and unsafe changes before migrations run', () => {

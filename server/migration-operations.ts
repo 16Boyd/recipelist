@@ -12,6 +12,7 @@ export const appMigrations: AppMigration[] = [
   { version: '0002_mfa_session_assurance', file: '0002_mfa_session_assurance.sql' },
   { version: '0003_auth_foreign_keys_uuid', file: '0003_auth_foreign_keys_uuid.sql' },
   { version: '0004_recipe_instructions', file: '0004_recipe_instructions.sql' },
+  { version: '0005_recipe_instruction_backfill', file: '0005_recipe_instruction_backfill.sql' },
 ]
 
 type MigrationClient = {

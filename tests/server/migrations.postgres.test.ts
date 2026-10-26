@@ -83,9 +83,9 @@ suite('PostgreSQL migration integration (dedicated TEST_DATABASE_URL and explici
   }
 
   /** Apply the registered app migrations on a dedicated connection. */
-  async function applyPendingAppMigrations() {
+  async function applyPendingAppMigrations(migrations = appMigrations) {
     const client = await pool.connect()
-    await applyAppMigrations(client, appMigrations, (file) =>
+    await applyAppMigrations(client, migrations, (file) =>
       readFile(resolve(process.cwd(), 'server/migrations', file), 'utf8'),
     )
   }
@@ -177,6 +177,27 @@ suite('PostgreSQL migration integration (dedicated TEST_DATABASE_URL and explici
     expect(migrationRows).toHaveLength(0)
     const { rows: typeRows } = await pool.query(`SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='user_roles' AND column_name='user_id'`)
     expect(typeRows).toEqual([{ data_type: 'text' }])
+  })
+
+  it('backfills blank and whitespace-only seeded recipe instructions while preserving admin text', async () => {
+    await createLegacyAppSchema()
+    const seedIds = ['tomato-orzo', 'chickpea-bowls', 'miso-salmon', 'lemon-chicken', 'mushroom-tacos', 'sausage-peppers']
+    const migrationsThrough0004 = appMigrations.filter(({ version }) =>
+      version === '0001_app_data_and_recipe_catalog'
+      || version === '0002_mfa_session_assurance'
+      || version === '0003_auth_foreign_keys_uuid'
+      || version === '0004_recipe_instructions',
+    )
+    await applyPendingAppMigrations(migrationsThrough0004)
+    await pool.query('INSERT INTO recipes(id, created_by) SELECT seed_id, NULL FROM unnest($1::text[]) AS seed(seed_id)', [seedIds])
+    await pool.query("UPDATE recipes SET instructions = 'admin text' WHERE id = 'tomato-orzo'")
+    await pool.query("UPDATE recipes SET instructions = chr(9) || chr(10) || ' ' WHERE id = 'miso-salmon'")
+    await applyPendingAppMigrations(appMigrations.filter(({ version }) => version === '0005_recipe_instruction_backfill'))
+    const { rows } = await pool.query<{ id: string; instructions: string }>('SELECT id, instructions FROM recipes ORDER BY id')
+    expect(rows).toHaveLength(seedIds.length)
+    expect(rows.every(({ instructions }) => instructions.trim().length > 0)).toBe(true)
+    expect(rows.find(({ id }) => id === 'tomato-orzo')?.instructions).toBe('admin text')
+    expect(rows.find(({ id }) => id === 'miso-salmon')?.instructions.trim()).not.toBe('')
   })
 
   it('rejects orphaned UUID values before converting columns', async () => {

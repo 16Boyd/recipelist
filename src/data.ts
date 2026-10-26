@@ -9,7 +9,7 @@ export const demoRecipes: Recipe[] = [
     time: 25,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Dry-toast the orzo in a dry nonstick skillet for 1 minute, then stir in minced garlic and chopped sun-dried tomatoes.\n2. Add vegetable stock, bring to a simmer, and cook, stirring often, until the orzo is tender and most liquid is absorbed.\n3. Stir in cream and spinach until the spinach wilts; finish with parmesan and serve.',
     description: 'A silky one-pan orzo with bright tomato, greens, and a little parmesan.',
     ingredients: [
       { name: 'orzo', amount: '1 cup' },
@@ -29,7 +29,7 @@ export const demoRecipes: Recipe[] = [
     time: 30,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Drain and dry the chickpeas; toast in a dry skillet over medium heat, stirring often, until golden and crisp.\n2. Cover couscous with boiling water, cover, and let stand 5 minutes; fluff with a fork.\n3. Mix yogurt with lemon juice and chopped dill. Serve couscous and chickpeas with diced cucumber and lemon-dill yogurt.',
     description: 'Herby couscous, crunchy chickpeas, and cool cucumber yogurt.',
     ingredients: [
       { name: 'chickpeas', amount: '1 can' },
@@ -48,7 +48,7 @@ export const demoRecipes: Recipe[] = [
     time: 35,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Cook the rice according to its package directions. Thinly slice the cucumber and toss with rice vinegar; set aside.\n2. Stir miso and honey together, then spread over the salmon fillets.\n3. Bake at 400°F until the thickest part of each fillet reaches 145°F, about 10–15 minutes. Serve with rice and pickled cucumber.',
     description: 'Sweet-salty miso salmon with fluffy rice and quick pickled cucumber.',
     ingredients: [
       { name: 'salmon', amount: '2 fillets' },
@@ -67,7 +67,7 @@ export const demoRecipes: Recipe[] = [
     time: 40,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Heat the oven to 425°F. Halve the potatoes and roast cut-side down until crisp and tender, about 25 minutes. Gently press each half with a fork, then roast 5 minutes more to crisp the edges.\n2. Melt 1 tablespoon butter in a skillet and sear the chicken until golden on both sides. Add chicken stock, cover, and cook gently until the center reaches 165°F; transfer to a plate to rest.\n3. Simmer green beans in the same skillet until tender-crisp. Stir in lemon juice and the remaining butter, then simmer briefly to reduce the pan sauce. Serve with the chicken and smashed potatoes.',
     description: 'Golden chicken, smashed potatoes, and a fresh lemon pan sauce.',
     ingredients: [
       { name: 'chicken breast', amount: '2' },
@@ -86,7 +86,7 @@ export const demoRecipes: Recipe[] = [
     time: 20,
     servings: 2,
     image: 'https://images.unsplash.com/photo-1551500566-9c6f5f7cbb6a?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Thinly slice the mushrooms and red onion. Cook in a hot dry skillet until the mushrooms brown and release their moisture.\n2. Stir in smoked paprika and a squeeze of lime; cook 1 minute more.\n3. Warm the tortillas in a dry skillet. Fill with mushrooms, sliced avocado, and red onion; finish with more lime.',
     description: 'Quick charred mushrooms with avocado, lime, and a smoky spice blend.',
     ingredients: [
       { name: 'mushrooms', amount: '8 oz' },
@@ -105,7 +105,7 @@ export const demoRecipes: Recipe[] = [
     time: 30,
     servings: 4,
     image: 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=1100&q=85',
-    instructions: '',
+    instructions: '1. Heat a large skillet over medium heat. Brown the sausage, breaking it into bite-size pieces; drain excess fat if needed.\n2. Add sliced onion and bell pepper and cook until softened. Stir in minced garlic for 30 seconds, then add crushed tomatoes and simmer until the sausage is cooked through.\n3. Prepare couscous according to its package directions and serve the tomato-sausage skillet over it.',
     description: 'A weeknight skillet with browned sausage, peppers, and warm spices.',
     ingredients: [
       { name: 'Italian sausage', amount: '1 lb' },
