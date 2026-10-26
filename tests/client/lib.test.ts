@@ -111,6 +111,16 @@ describe('recipe matching and construction', () => {
     expect(matchRecipes([row], [{ name: 'tofu', amount: '2 block' }])[0]?.available).toEqual(row.ingredients)
     expect(matchRecipes([row], [{ name: 'tofu', amount: '1 block' }])[0]?.missing).toEqual(row.ingredients)
   })
+  it('normalizes common plural unit abbreviations for volume and weight comparisons', () => {
+    const pounds = recipe('plural-pounds', 'Pounds', [{ name: 'rice', amount: '2 lb' }])
+    expect(matchRecipes([pounds], [{ name: 'rice', amount: '2 lbs' }])[0]?.available).toEqual(pounds.ingredients)
+
+    const kilograms = recipe('plural-kilograms', 'Kilograms', [{ name: 'rice', amount: '1 kg' }])
+    expect(matchRecipes([kilograms], [{ name: 'rice', amount: '1 kgs' }])[0]?.available).toEqual(kilograms.ingredients)
+
+    const milliliters = recipe('plural-milliliters', 'Milliliters', [{ name: 'water', amount: '250 ml' }])
+    expect(matchRecipes([milliliters], [{ name: 'water', amount: '250 mls' }])[0]?.available).toEqual(milliliters.ingredients)
+  })
   it('pools equivalent pantry entries and consumes pooled stock across repeated requirements', () => {
     const pooledSubstitutions = recipe('pooled-substitutions', 'Poultry', [{ name: 'chicken', amount: '2 lb' }])
     expect(matchRecipes([pooledSubstitutions], [
@@ -192,6 +202,16 @@ describe('recipe matching and construction', () => {
     const unitless = recipe('unitless-rice', 'Rice', [{ name: 'rice', amount: '2' }])
     expect(matchRecipes([unitless], [{ name: 'rice', amount: '2 scoops' }])[0]?.missing).toEqual(unitless.ingredients)
   })
+  it('keeps distinct count units from satisfying each other', () => {
+    const garlicHeads = recipe('garlic-heads', 'Roasted garlic', [{ name: 'garlic', amount: '1 head' }])
+    const garlicCloves = recipe('garlic-cloves-count', 'Garlic cloves', [{ name: 'garlic', amount: '1 clove' }])
+    expect(matchRecipes([garlicHeads], [{ name: 'garlic', amount: '1 clove' }])[0]?.missing).toEqual(garlicHeads.ingredients)
+    expect(matchRecipes([garlicCloves], [{ name: 'garlic', amount: '1 head' }])[0]?.missing).toEqual(garlicCloves.ingredients)
+
+    const canned = recipe('canned-jars', 'Canned tomatoes', [{ name: 'tomatoes', amount: '2 cans' }])
+    expect(matchRecipes([canned], [{ name: 'tomatoes', amount: '2 jars' }])[0]?.missing).toEqual(canned.ingredients)
+    expect(matchRecipes([canned], [{ name: 'tomatoes', amount: '1 can' }, { name: 'tomatoes', amount: '1 jar' }])[0]?.missing).toEqual(canned.ingredients)
+  })
   it('matches recognized count units to ingredient-name suffixes without changing volume units', () => {
     const chicken = recipe('chicken-breast-count', 'Chicken', [{ name: 'chicken breast', amount: '2' }])
     expect(matchRecipes([chicken], [{ name: 'chicken breast', amount: '2 breasts' }])[0]?.available).toEqual(chicken.ingredients)
@@ -199,6 +219,28 @@ describe('recipe matching and construction', () => {
 
     const stock = recipe('chicken-stock-volume', 'Chicken stock', [{ name: 'chicken stock', amount: '2 cups' }])
     expect(matchRecipes([stock], [{ name: 'chicken stock', amount: '473.176 ml' }])[0]?.available).toEqual(stock.ingredients)
+  })
+  it('parses common amount phrases without accepting unrelated or short amounts', () => {
+    const chicken = recipe('qualified-chicken', 'Chicken', [{ name: 'chicken breast', amount: '2' }])
+    expect(matchRecipes([chicken], [{ name: 'chicken breast', amount: '2 boneless chicken breasts' }])[0]?.available).toEqual(chicken.ingredients)
+    expect(matchRecipes([chicken], [{ name: 'chicken breast', amount: '1 boneless chicken breast' }])[0]?.missing).toEqual(chicken.ingredients)
+
+    const salmon = recipe('salmon-fillets', 'Salmon', [{ name: 'salmon', amount: '2 fillets' }])
+    expect(matchRecipes([salmon], [{ name: 'salmon', amount: '2 salmon fillets' }])[0]?.available).toEqual(salmon.ingredients)
+    expect(matchRecipes([salmon], [{ name: 'salmon', amount: '1 salmon fillet' }])[0]?.missing).toEqual(salmon.ingredients)
+
+    const rice = recipe('rice-cups', 'Rice', [{ name: 'rice', amount: '1 cup' }])
+    expect(matchRecipes([rice], [{ name: 'rice', amount: '1 cup of rice' }])[0]?.available).toEqual(rice.ingredients)
+    expect(matchRecipes([rice], [{ name: 'rice', amount: '1 cup of salt' }])[0]?.missing).toEqual(rice.ingredients)
+
+    const eggs = recipe('large-eggs', 'Eggs', [{ name: 'eggs', amount: '2' }])
+    expect(matchRecipes([eggs], [{ name: 'eggs', amount: '2 large eggs' }])[0]?.available).toEqual(eggs.ingredients)
+    expect(matchRecipes([eggs], [{ name: 'eggs', amount: '1 large egg' }])[0]?.missing).toEqual(eggs.ingredients)
+
+    const garlic = recipe('cloves-garlic', 'Garlic', [{ name: 'garlic', amount: '2 cloves' }])
+    expect(matchRecipes([garlic], [{ name: 'garlic', amount: '2 cloves garlic' }])[0]?.available).toEqual(garlic.ingredients)
+    expect(matchRecipes([garlic], [{ name: 'garlic', amount: '1 clove garlic' }])[0]?.missing).toEqual(garlic.ingredients)
+    expect(matchRecipes([eggs], [{ name: 'eggs', amount: '2 scoops eggs' }])[0]?.missing).toEqual(eggs.ingredients)
   })
   it('keeps zero-quantity requirements available when a matching pantry ingredient exists', () => {
     const zero = recipe('zero-rice', 'Rice', [{ name: 'rice', amount: '0 cup' }])
@@ -246,6 +288,77 @@ describe('recipe matching and construction', () => {
     const rows = [recipe('slow', 'Slow', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 60), recipe('fast', 'Fast', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 10), recipe('more-missing', 'More missing', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }, { name: 'salt', amount: '' }], 1)]
     expect(matchRecipes(rows, [{ name: 'rice', amount: '' }]).map(({ recipe: row }) => row.id)).toEqual(['fast', 'slow', 'more-missing'])
     expect(matchRecipes([recipe('tieA', 'A', [{ name: 'rice', amount: '' }, { name: 'salt', amount: '' }], 10), recipe('tieB', 'B', [{ name: 'rice', amount: '' }, { name: 'oil', amount: '' }], 20)], [{ name: 'rice', amount: '' }]).map(({ recipe: row }) => row.id)).toEqual(['tieA', 'tieB'])
+  })
+  it('updates matches when pantry groups change while preserving unrelated results', () => {
+    const rice = recipe('cached-rice', 'Rice', [{ name: 'rice', amount: '2 cups' }])
+    const beans = recipe('cached-beans', 'Beans', [{ name: 'beans', amount: '2 cans' }])
+    const matcher = createRecipeMatcher([rice, beans])
+    const initial = matcher([{ name: 'rice', amount: '1 cup' }, { name: 'beans', amount: '2 cans' }])
+    const initialRice = initial.find(({ recipe: row }) => row.id === 'cached-rice')!
+    const initialBeans = initial.find(({ recipe: row }) => row.id === 'cached-beans')!
+
+    const updated = matcher([{ name: 'rice', amount: '2 cups' }, { name: 'beans', amount: '2 cans' }])
+    const updatedRice = updated.find(({ recipe: row }) => row.id === 'cached-rice')!
+    const updatedBeans = updated.find(({ recipe: row }) => row.id === 'cached-beans')!
+    expect(initialRice.missingCount).toBe(1)
+    expect(updatedRice.missingCount).toBe(0)
+    expect(updatedRice.available).toEqual(rice.ingredients)
+    const availableGetter = Object.getOwnPropertyDescriptor(updatedBeans, 'available')?.get
+    expect(availableGetter).toBeTypeOf('function')
+    expect(Object.isFrozen(updatedBeans)).toBe(true)
+    const available = availableGetter!.call(updatedBeans) as readonly Ingredient[]
+    expect(availableGetter!.call(updatedBeans)).toBe(available)
+    expect(Object.isFrozen(available)).toBe(true)
+    const firstBean = available[0]
+    expect(Reflect.set(available, 0, undefined)).toBe(false)
+    expect(available[0]).toBe(firstBean)
+    expect(updatedBeans).toEqual(initialBeans)
+
+    const removed = matcher([{ name: 'beans', amount: '2 cans' }])
+    const removedRice = removed.find(({ recipe: row }) => row.id === 'cached-rice')!
+    expect(removedRice.missingCount).toBe(1)
+    expect(removedRice.missing).toEqual(rice.ingredients)
+    expect(removed.find(({ recipe: row }) => row.id === 'cached-beans')).toEqual(initialBeans)
+    expect(initialRice.missing).toEqual(rice.ingredients)
+    expect(initialBeans.available).toEqual(beans.ingredients)
+  })
+  it('exposes an immutable lazy preview of the first two missing ingredients', () => {
+    const row = recipe('missing-preview', 'Missing preview', [
+      { name: 'rice', amount: '1 cup' }, { name: 'beans', amount: '1 can' }, { name: 'salt', amount: '1 tsp' },
+    ])
+    const match = createRecipeMatcher([row])([])[0]!
+    const previewGetter = Object.getOwnPropertyDescriptor(match, 'missingPreview')?.get
+
+    expect(previewGetter).toBeTypeOf('function')
+    const preview = previewGetter!.call(match) as readonly Ingredient[]
+    expect(preview).toEqual(row.ingredients.slice(0, 2))
+    expect(previewGetter!.call(match)).toBe(preview)
+    expect(Object.isFrozen(preview)).toBe(true)
+    expect(match.missingCount).toBe(3)
+  })
+  it('updates only a changed ingredient group while consuming repeated requirements and handling blank stock', () => {
+    const repeatedRice = recipe('delta-rice', 'Rice', [
+      { name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '1 cup' }, { name: 'beans', amount: '1 can' },
+    ])
+    const matcher = createRecipeMatcher([repeatedRice])
+    const first = matcher([{ name: 'rice', amount: '1 cup' }])[0]!
+    expect(first.missingCount).toBe(2)
+    expect(first.available.map(({ name }) => name)).toEqual(['rice'])
+
+    const enoughRice = matcher([{ name: 'rice', amount: '2 cups' }])[0]!
+    expect(enoughRice.missingCount).toBe(1)
+    expect(enoughRice.available.map(({ name }) => name)).toEqual(['rice', 'rice'])
+
+    const addedBeans = matcher([{ name: 'rice', amount: '2 cups' }, { name: 'beans', amount: '' }])[0]!
+    expect(addedBeans.missingCount).toBe(0)
+    expect(addedBeans.available).toEqual(repeatedRice.ingredients)
+
+    const removedRice = matcher([{ name: 'beans', amount: '' }])[0]!
+    expect(removedRice.missingCount).toBe(2)
+    expect(removedRice.available).toEqual([repeatedRice.ingredients[2]])
+  })
+  it('keeps empty-ingredient recipes at zero coverage with the cached matcher', () => {
+    expect(createRecipeMatcher([recipe('empty-cache', 'Empty', [])])([])[0]).toMatchObject({ percent: 0, available: [], missing: [] })
   })
   it('creates recipes with defaults, trimmed values, and unique prefixed IDs', () => {
     const uuid = vi.spyOn(crypto, 'randomUUID')

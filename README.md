@@ -6,9 +6,9 @@ RecipeList is a recipe and pantry planner. Browse the shared recipe catalog, tra
 
 ## Pantry and recipe readiness
 
-The Pantry page lists every ingredient used by your recipes, so you can add items even before you have them. Enter an amount on hand, such as `2 cups` or `3 lemons`, to compare your stock with the quantities each recipe calls for. Recipe readiness and missing-ingredient lists account for those quantities, including repeated uses of the same ingredient.
+The Pantry page lists every ingredient used by your recipes, so you can add items even before you have them. Enter an amount on hand, such as `2 cups`, `1 cup of rice`, `3 lemons`, `2 large eggs`, `2 boneless chicken breasts`, `2 salmon fillets`, or `2 cloves garlic`, to compare your stock with recipe requirements. Common volume and weight units are converted for comparison; count units such as a garlic head and a garlic clove remain distinct. Recipe readiness and missing-ingredient lists account for those quantities, including repeated uses of the same ingredient.
 
-Existing pantry entries with no amount continue to match by ingredient name alone. For measurable recipe requirements, incompatible units or unparseable nonblank pantry amounts do not count as available stock; enter a comparable amount and unit to check readiness accurately.
+Blank pantry amounts match by ingredient name alone. Supported units convert for comparison. Unknown units are compared only when their normalized names match, without conversion; incompatible units and unparseable nonblank amounts do not count as available stock. Recognized ingredient phrases are accepted when they clearly identify the item, while arbitrary trailing text fails closed.
 
 ## Deployment options
 

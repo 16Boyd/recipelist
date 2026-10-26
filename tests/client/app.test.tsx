@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../src/App'
@@ -114,7 +114,9 @@ describe('pantry, recipes, and shopping list flows', () => {
       const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData | undefined
       expect(saved?.pantry).toEqual([{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '4 cups' }])
     })
-    await user.click(screen.getAllByRole('button', { name: 'Remove rice from pantry' })[0]!)
+    expect(screen.getByRole('button', { name: 'Remove rice from pantry, entry 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove rice from pantry, entry 2' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove rice from pantry, entry 1' }))
     await waitFor(() => {
       const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData | undefined
       expect(saved?.pantry).toEqual([{ name: 'rice', amount: '4 cups' }])
@@ -137,12 +139,17 @@ describe('pantry, recipes, and shopping list flows', () => {
     await mountReady()
     await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
     expect(screen.getByText('ALL RECIPE INGREDIENTS')).toBeInTheDocument()
-    const catalog = document.querySelector('.pantry-catalog')!
+    const catalog = screen.getByRole('list', { name: 'ALL RECIPE INGREDIENTS' })
     expect(Array.from(catalog.querySelectorAll('li > span:first-child')).map((item) => item.textContent)).toContain('rice')
     expect(Array.from(catalog.querySelectorAll('li > span:first-child')).filter((item) => item.textContent?.toLowerCase() === 'rice')).toHaveLength(1)
-    await user.click(screen.getAllByRole('button', { name: 'Add to pantry' })[0]!)
+    expect(screen.getByLabelText('Search recipe ingredients')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add to pantry: cream' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add to pantry: cream' }))
     expect(await screen.findAllByText(/Tracked/)).toHaveLength(2)
     expect(screen.getByLabelText('Amount on hand')).toHaveAttribute('maxLength', '120')
+    const amountHint = screen.getByText(/Use numeric amounts such as 2 cups, 3 lemons, or 2 salmon fillets\. Supported units convert; unknown units compare only when their names match and aren’t converted\. Incompatible units or unparseable amounts won’t count; blank amounts match by name\./)
+    expect(amountHint).toHaveAttribute('id', 'pantry-amount-hint')
+    expect(screen.getByLabelText('Amount on hand')).toHaveAttribute('aria-describedby', 'pantry-amount-hint')
     await user.type(screen.getByLabelText('Add pantry ingredient'), 'Rice')
     await user.type(screen.getByLabelText('Amount on hand'), '2 cups')
     await user.click(screen.getByRole('button', { name: 'Add item' }))
@@ -160,6 +167,29 @@ describe('pantry, recipes, and shopping list flows', () => {
     await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ pantry: expect.arrayContaining([{ name: 'parsley', amount: '2 bunches' }]) })))
     await user.click(screen.getByRole('button', { name: 'Remove parsley from pantry' }))
     expect(screen.queryByText('parsley')).not.toBeInTheDocument()
+  })
+  it('searches the full recipe-ingredient catalog without changing its stable order', async () => {
+    const user = userEvent.setup()
+    await mountReady()
+    await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
+    const catalog = screen.getByRole('list', { name: 'ALL RECIPE INGREDIENTS' })
+    const search = screen.getByLabelText('Search recipe ingredients')
+    await user.type(search, 'R')
+    expect(Array.from(catalog.querySelectorAll('li > span:first-child')).map((item) => item.textContent)).toEqual(['cream', 'ground chicken', 'rice'])
+    expect(document.querySelector('.pantry-catalog-count')).toHaveTextContent('Showing 3 of 3 recipe ingredients matching “R”.')
+  })
+  it('renders large recipe-ingredient catalogs in pages and lets users reach later entries', async () => {
+    const user = userEvent.setup()
+    const ingredients = Array.from({ length: 105 }, (_, index) => ({ name: `ingredient ${String(index).padStart(3, '0')}`, amount: '' }))
+    const manyIngredients: Recipe = { ...shared[0]!, id: 'large-catalog', title: 'Large catalog', ingredients }
+    await mountReady(userData(), [manyIngredients])
+    await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
+    const catalog = screen.getByRole('list', { name: 'ALL RECIPE INGREDIENTS' })
+    expect(catalog.querySelectorAll('li')).toHaveLength(100)
+    expect(document.querySelector('.pantry-catalog-count')).toHaveTextContent('Showing 100 of 105 recipe ingredients.')
+    await user.click(screen.getByRole('button', { name: 'Show more ingredients' }))
+    expect(catalog.querySelectorAll('li')).toHaveLength(105)
+    expect(within(catalog).getByText('ingredient 104')).toBeInTheDocument()
   })
   it('adds, checks, and clears shopping items while preventing duplicates', async () => {
     const user = userEvent.setup()
@@ -182,8 +212,10 @@ describe('pantry, recipes, and shopping list flows', () => {
     const user = userEvent.setup()
     await mountReady()
     expect(await screen.findByText('Chicken and Rice')).toBeInTheDocument()
+    expect(screen.getByText('Missing: lemon')).toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Search recipes or ingredients' }), 'tomato')
     expect(await screen.findByText('Tomato Soup')).toBeInTheDocument()
+    expect(screen.getByText('Missing: tomatoes, cream')).toBeInTheDocument()
     expect(screen.queryByText('Chicken and Rice')).not.toBeInTheDocument()
     await user.clear(screen.getByRole('textbox', { name: 'Search recipes or ingredients' }))
     await user.click(screen.getAllByRole('button', { name: 'Recipes' })[0]!)
@@ -234,7 +266,7 @@ describe('pantry, recipes, and shopping list flows', () => {
     await mountReady({ ...userData(), recipes: [privateRecipe] }, [])
     await user.click(await screen.findByRole('button', { name: 'View Chicken and Rice' }))
     expect(screen.getByText('No instructions have been added for this recipe yet.')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.click(await screen.findByRole('button', { name: 'Add instructions' }))
     const instructions = ['Roast chicken.', 'Serve with rice.'].join('\n')
     await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), instructions)
     await user.click(screen.getByRole('button', { name: 'Save instructions' }))
@@ -251,7 +283,7 @@ describe('pantry, recipes, and shopping list flows', () => {
     const legacyShared = { ...shared[1]!, instructions: '' }
     await mountReady(userData(), [legacyShared], 'admin')
     await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
-    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.click(await screen.findByRole('button', { name: 'Add instructions' }))
     const instructions = '😀'.repeat(12000)
     const textarea = screen.getByRole('textbox', { name: 'Recipe instructions' })
     expect(textarea).not.toHaveAttribute('maxLength')
@@ -265,7 +297,7 @@ describe('pantry, recipes, and shopping list flows', () => {
     const legacyShared = { ...shared[1]!, instructions: '' }
     const firstApp = await mountReady(userData(), [legacyShared], 'admin')
     await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
-    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.click(await screen.findByRole('button', { name: 'Add instructions' }))
     const instructions = ['Simmer tomatoes.', 'Stir in cream.'].join('\n')
     await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), instructions)
     await user.click(screen.getByRole('button', { name: 'Save instructions' }))
@@ -284,7 +316,7 @@ describe('pantry, recipes, and shopping list flows', () => {
     await mountReady(userData(), [{ ...shared[1]!, instructions: '' }], 'admin')
     mocks.updateSharedRecipeInstructions.mockRejectedValueOnce(new Error('Recipe instructions have already been added'))
     await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
-    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.click(await screen.findByRole('button', { name: 'Add instructions' }))
     const draft = 'Cook the tomatoes.'
     await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), draft)
     await user.click(screen.getByRole('button', { name: 'Save instructions' }))
@@ -300,7 +332,7 @@ describe('pantry, recipes, and shopping list flows', () => {
     mocks.loadSharedRecipes.mockResolvedValueOnce([completedRecipe])
     mocks.updateSharedRecipeInstructions.mockRejectedValueOnce(new Error('Recipe instructions have already been added'))
     await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
-    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    await user.click(await screen.findByRole('button', { name: 'Add instructions' }))
     await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), 'My draft steps.')
     await user.click(screen.getByRole('button', { name: 'Save instructions' }))
 

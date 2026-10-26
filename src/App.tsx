@@ -359,18 +359,20 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     const sharedIds = new Set(sharedRecipes.map((recipe) => recipe.id))
     return [...sharedRecipes, ...data.recipes.filter((recipe) => !sharedIds.has(recipe.id))]
   }, [data.recipes, sharedRecipes])
+  const recipeSearchText = useMemo(() => new Map(recipes.map((recipe) => [recipe, [recipe.title, recipe.source, recipe.category, ...recipe.ingredients.map((item) => item.name)].join(' ').toLocaleLowerCase()])), [recipes])
   const recipeIngredientCatalog = useMemo(() => getRecipeIngredientCatalog(recipes), [recipes])
   const recipeMatcher = useMemo(() => createRecipeMatcher(recipes), [recipes])
   const matches = useMemo(() => recipeMatcher(data.pantry), [recipeMatcher, data.pantry])
   const filteredMatches = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
-    return matches.filter(({ recipe, missing }) => {
-      const searchText = [recipe.title, recipe.source, recipe.category, ...recipe.ingredients.map((item) => item.name)].join(' ').toLocaleLowerCase()
-      return (!needle || searchText.includes(needle)) && (!onlyCookable || section !== 'recipes' || missing.length === 0)
+    return matches.filter((match) => {
+      const { recipe } = match
+      const searchText = recipeSearchText.get(recipe) ?? ''
+      return (!needle || searchText.includes(needle)) && (!onlyCookable || section !== 'recipes' || match.missingCount === 0)
     })
-  }, [matches, onlyCookable, query, section])
+  }, [matches, onlyCookable, query, recipeSearchText, section])
   const shoppingCount = data.shopping.filter((item) => !item.checked).length
-  const cookableCount = matches.filter((item) => item.missing.length === 0).length
+  const cookableCount = matches.filter((item) => item.missingCount === 0).length
   const bestMatches = matches.slice(0, 3)
   const dateLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toLocaleUpperCase()
 
@@ -448,7 +450,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
 
   /** Add a recipe match’s missing ingredients to the shopping list. */
   function addMissing(match: RecipeMatch) {
-    if (match.missing.length === 0) {
+    if (match.missingCount === 0) {
       setToast('Everything for this recipe is in your pantry')
       return
     }
@@ -737,7 +739,12 @@ function RecipeGrid({ matches, onOpen, onAddMissing }: { matches: RecipeMatch[];
 
 /** Render one recipe summary and its available cooking actions. */
 function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void }) {
-  const { recipe, percent, missing } = match
+  const { recipe, percent, missingCount } = match
+  let missingLabel = 'Everything’s in your pantry'
+  if (missingCount > 0) {
+    const preview = match.missingPreview
+    missingLabel = `Missing: ${preview.map((item) => item.name).join(', ')}${missingCount > preview.length ? ` +${missingCount - preview.length}` : ''}`
+  }
   return <article className="recipe-card">
     <button className="card-image" onClick={() => onOpen(recipe)} aria-label={`View ${recipe.title}`} style={{ backgroundImage: `linear-gradient(180deg, transparent 48%, rgba(22, 33, 25, .34)), url("${recipe.image}")` }}>
       <span className="source-pill">{recipe.source}</span><span className="image-time"><Icon name="clock" size={14} />{recipe.time} min</span>
@@ -746,9 +753,9 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
       <div className="card-meta"><span>{recipe.category}</span><span className="meta-dot" />{recipe.servings} servings</div>
       <button className="recipe-title" onClick={() => onOpen(recipe)}>{recipe.title}</button>
       <p className="recipe-description">{recipe.description}</p>
-      <div className="match-row"><div className="match-label"><span className="match-icon"><Icon name={percent === 100 ? 'check' : 'leaf'} size={13} /></span><strong>{percent}%</strong> in your pantry</div><span className="match-count">{missing.length === 0 ? 'Ready now' : `${missing.length} to get`}</span></div>
+      <div className="match-row"><div className="match-label"><span className="match-icon"><Icon name={percent === 100 ? 'check' : 'leaf'} size={13} /></span><strong>{percent}%</strong> in your pantry</div><span className="match-count">{missingCount === 0 ? 'Ready now' : `${missingCount} to get`}</span></div>
       <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
-      <div className="card-footer"><span className="missing-preview">{missing.length ? `Missing: ${missing.slice(0, 2).map((item) => item.name).join(', ')}${missing.length > 2 ? ` +${missing.length - 2}` : ''}` : 'Everything’s in your pantry'}</span><button className="round-arrow" onClick={() => missing.length ? onAddMissing(match) : onOpen(recipe)} aria-label={missing.length ? `Add missing ingredients for ${recipe.title}` : `Open ${recipe.title}`}><Icon name={missing.length ? 'plus' : 'arrow'} size={16} /></button></div>
+      <div className="card-footer"><span className="missing-preview">{missingLabel}</span><button className="round-arrow" onClick={() => missingCount ? onAddMissing(match) : onOpen(recipe)} aria-label={missingCount ? `Add missing ingredients for ${recipe.title}` : `Open ${recipe.title}`}><Icon name={missingCount ? 'plus' : 'arrow'} size={16} /></button></div>
     </div>
   </article>
 }
@@ -757,7 +764,14 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
 function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountChange, onSubmit, onRemove, onAmountUpdate, onAddCatalog, matches, onOpen, onAddMissing }: {
   pantry: PantryItem[]; catalog: { key: string; name: string }[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (index: number) => void; onAmountUpdate: (index: number, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
-  const cookable = matches.filter((match) => match.missing.length === 0)
+  const [catalogSearch, setCatalogSearch] = useState('')
+  const [catalogVisibleLimit, setCatalogVisibleLimit] = useState(100)
+  const cookable = matches.filter((match) => match.missingCount === 0)
+  const normalizedCatalogSearch = normalizeName(catalogSearch)
+  const filteredCatalog = useMemo(() => normalizedCatalogSearch
+    ? catalog.filter(({ key }) => key.includes(normalizedCatalogSearch))
+    : catalog, [catalog, normalizedCatalogSearch])
+  const visibleCatalog = filteredCatalog.slice(0, catalogVisibleLimit)
   const pantryByNormalizedName = useMemo(() => {
     const index = new Map<string, PantryItem[]>()
     for (const item of pantry) {
@@ -780,24 +794,31 @@ function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountCha
   return <div className="pantry-layout">
     <section className="surface-card pantry-card">
       <div className="surface-heading"><div><div className="section-kicker">WHAT’S ON HAND</div><h2>Your ingredients <span className="pill-count">{pantry.length}</span></h2><p>Add the ingredients you have. We’ll match them to your recipes.</p></div><span className="surface-illustration"><Icon name="basket" size={23} /></span></div>
-      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
-      {pantry.length ? <ul className="pantry-items">{pantry.map((item, index) => { const inputId = `pantry-qty-${index}-${normalizeName(item.name).replace(/\s/g, '-')}`; const normalizedName = normalizeName(item.name); const occurrence = (duplicateNameOccurrences.get(normalizedName) ?? 0) + 1; duplicateNameOccurrences.set(normalizedName, occurrence); const accessibleName = (duplicateNameCounts.get(normalizedName) ?? 0) > 1 ? `${item.name} amount on hand, entry ${occurrence}` : `${item.name} amount on hand`; return <li key={`${item.name}-${index}`}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={inputId}>{accessibleName}</label><input id={inputId} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(index, event.target.value)} /><button onClick={() => onRemove(index)} aria-label={`Remove ${item.name} from pantry`}><Icon name="close" size={13} /></button></li> })}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
-      <div className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</div><ul className="pantry-catalog">{catalog.map(({ key, name }) => {
+      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} aria-describedby="pantry-amount-hint" onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
+      <p id="pantry-amount-hint" className="pantry-amount-hint">Use numeric amounts such as 2 cups, 3 lemons, or 2 salmon fillets. Supported units convert; unknown units compare only when their names match and aren’t converted. Incompatible units or unparseable amounts won’t count; blank amounts match by name.</p>
+      {pantry.length ? <ul className="pantry-items">{pantry.map((item, index) => { const inputId = `pantry-qty-${index}-${normalizeName(item.name).replace(/\s/g, '-')}`; const normalizedName = normalizeName(item.name); const occurrence = (duplicateNameOccurrences.get(normalizedName) ?? 0) + 1; duplicateNameOccurrences.set(normalizedName, occurrence); const duplicate = (duplicateNameCounts.get(normalizedName) ?? 0) > 1; const accessibleName = duplicate ? `${item.name} amount on hand, entry ${occurrence}` : `${item.name} amount on hand`; const removeAccessibleName = duplicate ? `Remove ${item.name} from pantry, entry ${occurrence}` : `Remove ${item.name} from pantry`; return <li key={`${item.name}-${index}`}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={inputId}>{accessibleName}</label><input id={inputId} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(index, event.target.value)} /><button onClick={() => onRemove(index)} aria-label={removeAccessibleName}><Icon name="close" size={13} /></button></li> })}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      <h3 id="pantry-catalog-heading" className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</h3>
+      <label className="sr-only" htmlFor="pantry-catalog-search">Search recipe ingredients</label>
+      <input id="pantry-catalog-search" className="pantry-catalog-search" type="search" value={catalogSearch} onChange={(event) => { setCatalogSearch(event.target.value); setCatalogVisibleLimit(100) }} placeholder="Search recipe ingredients..." />
+      <p className="pantry-catalog-count" aria-live="polite">Showing {visibleCatalog.length} of {filteredCatalog.length} recipe ingredients{normalizedCatalogSearch ? ` matching “${catalogSearch.trim()}”` : ''}.</p>
+      <ul className="pantry-catalog" aria-labelledby="pantry-catalog-heading">{visibleCatalog.map(({ key, name }) => {
         const tracked = pantryByNormalizedName.get(key) ?? []
         const amounts = tracked.map((item) => item.amount.trim()).filter(Boolean)
         const trackedLabel = tracked.length > 1
           ? `Tracked (${tracked.length} entries)${amounts.length ? ` · ${amounts.join('; ')}` : ''}`
           : `Tracked${amounts[0] ? ` · ${amounts[0]}` : ''}`
-        return <li key={name}><span>{name}</span>{tracked.length ? <span className="pantry-tracked">{trackedLabel}</span> : <button className="text-button" onClick={() => onAddCatalog(name)}>Add to pantry <Icon name="plus" size={14} /></button>}</li>
+        return <li key={name}><span>{name}</span>{tracked.length ? <span className="pantry-tracked">{trackedLabel}</span> : <button className="text-button" aria-label={`Add to pantry: ${name}`} onClick={() => onAddCatalog(name)}>Add to pantry <Icon name="plus" size={14} /></button>}</li>
       })}</ul>
+      {filteredCatalog.length === 0 && <p className="pantry-catalog-empty">No recipe ingredients match your search.</p>}
+      {visibleCatalog.length < filteredCatalog.length && <button className="button button-outline pantry-catalog-more" type="button" onClick={() => setCatalogVisibleLimit((current) => current + 100)}>Show more ingredients</button>}
       <div className="pantry-footnote"><Icon name="leaf" size={15} /> Ingredient names are matched flexibly, regardless of capitalization.</div>
     </section>
     <section className="surface-card pantry-suggestions">
       <div className="section-kicker">YOUR NEXT MEAL</div><h2>{cookable.length ? 'You can make these now' : 'Get close to dinner'}</h2><p>{cookable.length ? 'Every ingredient is already in your pantry.' : 'These recipes are your closest pantry matches.'}</p>
       <div className="mini-match-list">{(cookable.length ? cookable.slice(0, 3) : matches.slice(0, 3)).map((match) => <div className="mini-match" key={match.recipe.id}>
         <div className="mini-match-image" style={{ backgroundImage: `url("${match.recipe.image}")` }} />
-        <div className="mini-match-copy"><strong>{match.recipe.title}</strong><span>{match.missing.length ? `${match.percent}% ready · ${match.missing.length} missing` : `${match.recipe.time} min · all ingredients ready`}</span></div>
-        <button className="round-arrow small" onClick={() => match.missing.length ? onAddMissing(match) : onOpen(match.recipe)} aria-label={match.missing.length ? `Add ingredients for ${match.recipe.title}` : `View ${match.recipe.title}`}><Icon name={match.missing.length ? 'plus' : 'arrow'} size={15} /></button>
+        <div className="mini-match-copy"><strong>{match.recipe.title}</strong><span>{match.missingCount ? `${match.percent}% ready · ${match.missingCount} missing` : `${match.recipe.time} min · all ingredients ready`}</span></div>
+        <button className="round-arrow small" onClick={() => match.missingCount ? onAddMissing(match) : onOpen(match.recipe)} aria-label={match.missingCount ? `Add ingredients for ${match.recipe.title}` : `View ${match.recipe.title}`}><Icon name={match.missingCount ? 'plus' : 'arrow'} size={15} /></button>
       </div>)}</div>
     </section>
   </div>
@@ -923,13 +944,13 @@ function RecipeDetails({ recipe, source, match, canAddInstructions, onSaveInstru
       </>}
       {instructionError && <div className="form-error" role="alert">{instructionError}</div>}
     </section>
-    {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missing.length ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missing.length ? `${match.missing.length} missing` : 'Ready to cook'}</span></div>}
+    {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missingCount ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missingCount ? `${match.missingCount} missing` : 'Ready to cook'}</span></div>}
     <div className="detail-ingredients-heading"><div><span className="section-kicker">THE SHOPPING LIST</span><h3>Ingredients <small>{recipe.ingredients.length}</small></h3></div><button className="text-button" onClick={() => onAddIngredients(recipe)}>Add all to pantry <Icon name="plus" size={15} /></button></div>
     <ul className="detail-ingredients">{recipe.ingredients.map((ingredient, index) => {
       const isAvailable = availableIngredients.has(ingredient)
       return <li key={`${ingredient.name}-${index}`} className={isAvailable ? 'available' : ''}><span className="detail-ingredient-check">{isAvailable && <Icon name="check" size={13} />}</span><span>{ingredient.name}</span><span className="detail-amount">{ingredient.amount}</span></li>
     })}</ul>
-    {match && <div className="modal-actions detail-actions"><span className="detail-hint">{match.missing.length ? `${match.missing.length} ingredients still to get` : 'You have everything you need'}</span><button className="button button-dark" onClick={() => onAddMissing(match)}>{match.missing.length ? 'Add missing to list' : 'Ready to cook'} <Icon name={match.missing.length ? 'plus' : 'check'} size={16} /></button></div>}
+    {match && <div className="modal-actions detail-actions"><span className="detail-hint">{match.missingCount ? `${match.missingCount} ingredients still to get` : 'You have everything you need'}</span><button className="button button-dark" onClick={() => onAddMissing(match)}>{match.missingCount ? 'Add missing to list' : 'Ready to cook'} <Icon name={match.missingCount ? 'plus' : 'check'} size={16} /></button></div>}
   </Modal>
 }
 

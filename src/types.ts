@@ -34,7 +34,9 @@ export type AppData = {
 
 export type RecipeMatch = {
   recipe: Recipe
-  available: Ingredient[]
-  missing: Ingredient[]
+  available: readonly Ingredient[]
+  missing: readonly Ingredient[]
+  missingPreview: readonly Ingredient[]
+  missingCount: number
   percent: number
 }
