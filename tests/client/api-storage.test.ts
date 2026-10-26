@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiRequest, errorMessage } from '../../src/api'
-import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from '../../src/recipeStorage'
+import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes, updateSharedRecipeInstructions } from '../../src/recipeStorage'
 import { loadProfile, saveProfile } from '../../src/profileStorage'
 import type { AppData, Recipe } from '../../src/types'
 
-const recipe: Recipe = { id: 'r1', title: 'Rice', source: 'Test', category: 'Dinner', time: 20, servings: 2, image: '', description: '', ingredients: [{ name: 'rice', amount: '1 cup' }] }
-const profile: AppData = { recipes: [recipe], pantry: ['rice'], shopping: [{ id: 's1', name: 'salt', checked: false }] }
+const recipe: Recipe = { id: 'r1', title: 'Rice', source: 'Test', category: 'Dinner', time: 20, servings: 2, image: '', description: '', instructions: 'Cook the rice.', ingredients: [{ name: 'rice', amount: '1 cup' }] }
+const profile: AppData = { recipes: [recipe], pantry: [{ name: 'rice', amount: '' }], shopping: [{ id: 's1', name: 'salt', checked: false }] }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -49,11 +49,30 @@ describe('shared recipe API validation', () => {
     await expect(insertSharedRecipe(recipe)).resolves.toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify(recipe) })
   })
+
+  it('rejects shared recipes that omit instructions', async () => {
+    const { instructions: _instructions, ...legacy } = recipe
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json([legacy])))
+    await expect(loadSharedRecipes()).rejects.toThrow('invalid recipe')
+  })
+
+  it('completes shared recipe instructions with a validated response', async () => {
+    const instructions = 'Simmer the rice.\\nServe warm.'
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ id: 'legacy/recipe', instructions }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(updateSharedRecipeInstructions('legacy/recipe', instructions)).resolves.toEqual({ id: 'legacy/recipe', instructions })
+    expect(fetchMock).toHaveBeenCalledWith('/api/recipes/legacy%2Frecipe/instructions', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ instructions }) }))
+  })
+
+  it('rejects malformed shared instruction update responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ id: 5, instructions: 'Cook the rice.' })))
+    await expect(updateSharedRecipeInstructions('r1', 'Cook the rice.')).rejects.toThrow('invalid recipe update')
+  })
 })
 
 describe('profile storage validation and write serialization', () => {
   it('parses profile responses and rejects invalid shapes', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(profile)).mockResolvedValueOnce(json({ ...profile, pantry: [2] })))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json(profile)).mockResolvedValueOnce(json({ ...profile, pantry: [{ name: 2, amount: '' }] })))
     await expect(loadProfile()).resolves.toEqual(profile)
     await expect(loadProfile()).rejects.toThrow('incomplete or invalid')
   })
@@ -69,14 +88,14 @@ describe('profile storage validation and write serialization', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const saveOne = saveProfile(profile)
-    const saveTwo = saveProfile({ ...profile, pantry: ['beans'] })
-    const saveThree = saveProfile({ ...profile, pantry: ['lentils'] })
+    const saveTwo = saveProfile({ ...profile, pantry: [{ name: 'beans', amount: '' }] })
+    const saveThree = saveProfile({ ...profile, pantry: [{ name: 'lentils', amount: '' }] })
     await vi.waitFor(() => expect(requests).toHaveLength(1))
     expect(requests).toHaveLength(1)
     resolveFirst(new Response(null, { status: 204 }))
     await expect(saveOne).resolves.toBeUndefined()
     await expect(saveTwo).rejects.toThrow('write failed')
     await expect(saveThree).resolves.toBeUndefined()
-    expect(requests).toEqual([JSON.stringify(profile), JSON.stringify({ ...profile, pantry: ['beans'] }), JSON.stringify({ ...profile, pantry: ['lentils'] })])
+    expect(requests).toEqual([JSON.stringify(profile), JSON.stringify({ ...profile, pantry: [{ name: 'beans', amount: '' }] }), JSON.stringify({ ...profile, pantry: [{ name: 'lentils', amount: '' }] })])
   })
 })

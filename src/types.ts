@@ -12,6 +12,7 @@ export type Recipe = {
   servings: number
   image: string
   description: string
+  instructions: string
   ingredients: Ingredient[]
 }
 
@@ -23,15 +24,19 @@ export type ShoppingItem = {
   checked: boolean
 }
 
+export type PantryItem = { name: string; amount: string }
+
 export type AppData = {
   recipes: Recipe[]
-  pantry: string[]
+  pantry: PantryItem[]
   shopping: ShoppingItem[]
 }
 
 export type RecipeMatch = {
   recipe: Recipe
-  available: Ingredient[]
-  missing: Ingredient[]
+  available: readonly Ingredient[]
+  missing: readonly Ingredient[]
+  missingPreview: readonly Ingredient[]
+  missingCount: number
   percent: number
 }

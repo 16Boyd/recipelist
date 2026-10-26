@@ -11,6 +11,7 @@ function isRecipe(value: unknown): value is Recipe {
     && typeof recipe.source === 'string' && typeof recipe.category === 'string'
     && typeof recipe.time === 'number' && typeof recipe.servings === 'number'
     && typeof recipe.image === 'string' && typeof recipe.description === 'string'
+    && typeof recipe.instructions === 'string'
     && Array.isArray(recipe.ingredients) && recipe.ingredients.every((item) => item
       && typeof item.name === 'string' && typeof item.amount === 'string')
 }
@@ -32,4 +33,24 @@ export async function loadSharedRecipes(): Promise<Recipe[]> {
 /** Submit a recipe to the shared catalog API. */
 export async function insertSharedRecipe(recipe: Recipe): Promise<void> {
   await apiRequest<void>('/api/recipes', { method: 'POST', body: JSON.stringify(recipe) })
+}
+
+/**
+ * Add instructions to a blank shared recipe and return the server's ID and text.
+ * The API requires a verified admin and nonblank text of at most 12,000 Unicode
+ * code points; instructions are sent unchanged.
+ *
+ * @throws {Error} For an invalid response shape, or propagated request or JSON
+ * parsing failures, including API rejections for missing recipes or existing instructions.
+ */
+export async function updateSharedRecipeInstructions(id: string, instructions: string): Promise<{ id: string; instructions: string }> {
+  const result = await apiRequest<unknown>(`/api/recipes/${encodeURIComponent(id)}/instructions`, {
+    method: 'PUT', body: JSON.stringify({ instructions }),
+  })
+  if (!result || typeof result !== 'object'
+    || typeof (result as { id?: unknown }).id !== 'string'
+    || typeof (result as { instructions?: unknown }).instructions !== 'string') {
+    throw new Error('The server returned an invalid recipe update.')
+  }
+  return { id: (result as { id: string }).id, instructions: (result as { instructions: string }).instructions }
 }

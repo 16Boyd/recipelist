@@ -4,6 +4,12 @@
 
 RecipeList is a recipe and pantry planner. Browse the shared recipe catalog, track ingredients on hand, see which dinners are closest to ready, and turn missing ingredients into a shopping list. Accounts, pantry data, and shopping lists are stored in PostgreSQL on the server; the browser does not store app data.
 
+## Pantry and recipe readiness
+
+The Pantry page lists every ingredient used by your recipes, so you can add items even before you have them. Enter an amount on hand, such as `2 cups`, `1 cup of rice`, `3 lemons`, `2 large eggs`, `2 boneless chicken breasts`, `2 salmon fillets`, or `2 cloves garlic`, to compare your stock with recipe requirements. Common volume and weight units are converted for comparison; count units such as a garlic head and a garlic clove remain distinct. Recipe readiness and missing-ingredient lists account for those quantities, including repeated uses of the same ingredient.
+
+Blank pantry amounts match by ingredient name alone. Supported units convert for comparison. Unknown units are compared only when their normalized names match, without conversion; incompatible units and unparseable nonblank amounts do not count as available stock. Recognized ingredient phrases are accepted when they clearly identify the item, while arbitrary trailing text fails closed.
+
 ## Deployment options
 
 - **Docker Compose:** follow the guide below to run the app and PostgreSQL together in containers.
@@ -51,7 +57,7 @@ Use a private network or firewall rules to restrict access as appropriate. Do no
 
 - Users create their own accounts from the sign-up screen with an email and password. Passwords must be 12–128 characters and include a lowercase letter, an uppercase letter, a number, and a symbol. Registration creates exactly one profile and a `member` role for each account.
 - Authenticator-app TOTP MFA is mandatory. New users enroll and verify an authenticator during setup. The server records which session completed TOTP verification and permits profile and recipe access only for that verified session. Users can sign in with a current TOTP code or a one-use backup code. Sessions use an HttpOnly cookie; the server keeps session cookie caching disabled.
-- Members can manage their own pantry, shopping list, and private recipes. Signed-in users can read the shared recipe catalog. Only admins can add shared recipes.
+- Members can manage their own pantry, shopping list, and private recipes, and can add instructions to their own private recipes that do not have them yet. Signed-in users can read the shared recipe catalog. Only admins can add shared recipes or complete blank instructions on shared recipes.
 - There is no in-app administrator or invitation screen. To make your first admin, sign up through the app, complete TOTP setup and sign in, then run this on the server from the project checkout after `npm install` and `npm run build`:
 
   ```sh

@@ -10,6 +10,7 @@ describe('built-in data fixtures', () => {
       expect(recipe.title).toBeTruthy()
       expect(recipe.ingredients.length).toBeGreaterThan(0)
       expect(recipe.ingredients.every((ingredient) => ingredient.name.trim() && ingredient.amount.length > 0)).toBe(true)
+      expect(recipe.instructions.trim()).toBeTruthy()
     }
   })
 

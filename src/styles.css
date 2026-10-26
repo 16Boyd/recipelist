@@ -245,11 +245,7 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
 .inline-add input:focus { border-color: #b6c8b2; box-shadow: 0 0 0 3px rgba(77, 118, 85, .07); }
 .inline-add input::placeholder { color: #adb1a8; }
 .inline-add .button { flex: 0 0 auto; }
-.ingredient-cloud { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 19px; }
-.ingredient-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 7px 0 9px; border: 1px solid #e8ece3; border-radius: 8px; background: #f6f8f2; color: #586659; font-size: 9px; }
 .ingredient-bullet { width: 5px; height: 5px; border-radius: 50%; background: #82a17c; }
-.ingredient-chip button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #9da59a; }
-.ingredient-chip button:hover { background: #e9eee3; color: #506a52; }
 .pantry-footnote { display: flex; align-items: center; gap: 6px; margin-top: 21px; padding-top: 13px; border-top: 1px solid #f0eee8; color: #a0a69c; font-size: 8px; }
 .pantry-footnote svg { color: #8da187; }
 .empty-inline { display: flex; align-items: center; gap: 9px; margin-top: 20px; padding: 17px; border-radius: 9px; background: #f7f7f1; color: #929a91; font-size: 10px; }
@@ -474,8 +470,6 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
   .inline-add { gap: 6px; }
   .inline-add input { height: 37px; padding: 0 8px; font-size: 9px; }
   .inline-add .button { min-height: 37px; gap: 4px; padding: 0 8px; font-size: 9px; }
-  .ingredient-cloud { gap: 6px; margin-top: 15px; }
-  .ingredient-chip { min-height: 28px; gap: 5px; padding-left: 7px; font-size: 8px; }
   .pantry-footnote { font-size: 7px; }
   .shopping-aside { grid-template-columns: 1fr; }
   .market-card { min-height: 145px; }
@@ -490,4 +484,26 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
   .recipe-form { gap: 10px; }
   .form-field input { height: 36px; }
   .toast { right: 12px; bottom: 69px; }
+}
+.detail-instructions { margin: 16px 0 20px; padding: 14px 16px; border: 1px solid #e7ebe5; border-radius: 12px; background: #fbfcfa; }
+.detail-instructions h3 { margin: 4px 0 8px; color: #455347; font: 700 13px 'Manrope', sans-serif; }
+.detail-instructions p { margin: 0; color: #59665c; font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-instructions .detail-instructions-empty { color: #59665c; font-style: italic; }
+.pantry-items, .pantry-catalog { list-style: none; padding: 0; margin: 1rem 0; }
+.pantry-items li, .pantry-catalog li { display: flex; align-items: center; gap: .75rem; padding: .65rem 0; border-bottom: 1px solid var(--line, #e8e8e3); }
+.pantry-items li { flex-wrap: wrap; }
+.pantry-items input, .inline-add input + input { min-width: 9rem; width: 10rem; padding: .55rem .7rem; border: 1px solid var(--line, #e8e8e3); border-radius: .5rem; }
+.pantry-amount-hint { margin: .45rem 0 0; color: #59665c; font-size: 12px; line-height: 1.5; }
+.pantry-items li > input { flex: 0 1 10rem; min-width: 0; margin-left: auto; }
+.pantry-catalog-heading { margin: 1.5rem 0 .7rem; }
+.pantry-catalog-search { display: block; width: 100%; height: 38px; padding: 0 11px; border: 1px solid #e9e9e1; border-radius: 8px; outline: 0; background: #fdfcf8; color: #435046; font-size: 12px; }
+.pantry-catalog-search:focus { border-color: #b6c8b2; box-shadow: 0 0 0 3px rgba(77, 118, 85, .07); }
+.pantry-catalog-search::placeholder { color: #59665c; opacity: 1; }
+.pantry-catalog-count, .pantry-catalog-empty { margin: .55rem 0 0; color: #59665c; font-size: 12px; line-height: 1.5; }
+.pantry-catalog-more { width: 100%; margin-top: .75rem; }
+.pantry-catalog li { flex-wrap: wrap; }
+.pantry-catalog li > .pantry-tracked, .pantry-catalog li > button { margin-left: auto; }
+.pantry-catalog .pantry-tracked { max-width: 70%; color: #59665c; font-size: 10px; overflow-wrap: anywhere; text-align: right; }
+@media (max-width: 600px) {
+  .pantry-catalog .pantry-tracked { display: block; flex: 1 0 100%; max-width: none; margin-left: 0; font-size: 12px; line-height: 1.4; text-align: left; }
 }

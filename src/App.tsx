@@ -2,13 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import AuthGate from './AuthGate'
 import { apiRequest, errorMessage } from './api'
 import { authClient, type AuthUser } from './authClient'
-import { createId, makeRecipe, matchRecipes, normalizeName } from './lib'
+import { createId, createRecipeMatcher, makeRecipe, normalizeName } from './lib'
 import MfaGate from './MfaGate'
 import { loadProfile, saveProfile } from './profileStorage'
-import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from './recipeStorage'
-import type { AppData, Ingredient, Recipe, RecipeMatch, UserRole } from './types'
+import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes, updateSharedRecipeInstructions } from './recipeStorage'
+import type { AppData, Ingredient, PantryItem, Recipe, RecipeMatch, UserRole } from './types'
 
 type Section = 'discover' | 'recipes' | 'pantry' | 'shopping'
+type RecipeSource = 'shared' | 'private'
+
+/** Count instruction characters in code points so the limit matches PostgreSQL text length. */
+function instructionCharacterCount(value: string): number {
+  return Array.from(value).length
+}
+
+/** Return sorted ingredient names, deduplicated by normalized name using the first spelling encountered. */
+function getRecipeIngredientCatalog(recipes: Recipe[]): { key: string; name: string }[] {
+  const catalog = new Map<string, string>()
+  for (const recipe of recipes) {
+    for (const ingredient of recipe.ingredients) {
+      const normalized = normalizeName(ingredient.name)
+      if (!catalog.has(normalized)) catalog.set(normalized, ingredient.name)
+    }
+  }
+  return Array.from(catalog, ([key, name]) => ({ key, name })).sort((a, b) => a.name.localeCompare(b.name))
+}
 
 const sectionLabels: Record<Section, string> = {
   discover: 'Discover',
@@ -262,7 +280,7 @@ function App() {
   if (securityStatus === 'setup') return <MfaGate key={user.id} userId={user.id} email={user.email} onSetupComplete={() => window.location.reload()} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
   if (profileStatus === 'error') return <StatusScreen title="We couldn’t load your kitchen" message={profileError} onRetry={() => { setProfileStatus('loading'); setProfileError(''); setLoadedUserId(null); setProfileAttempt((attempt) => attempt + 1) }} />
   if (profileStatus === 'loading' || loadedUserId !== user.id || !data) return <StatusScreen title="Loading your kitchen…" />
-  return <KitchenApp user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
+  return <KitchenApp key={user.id} user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
 }
 
 /** Render a loading or error state with an optional retry action. */
@@ -275,10 +293,12 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   const [section, setSection] = useState<Section>('discover')
   const [query, setQuery] = useState('')
   const [pantryEntry, setPantryEntry] = useState('')
+  const [pantryAmount, setPantryAmount] = useState('')
   const [shoppingEntry, setShoppingEntry] = useState('')
   const [onlyCookable, setOnlyCookable] = useState(false)
   const [showRecipeForm, setShowRecipeForm] = useState(false)
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
+  const [selectedRecipeSource, setSelectedRecipeSource] = useState<RecipeSource | null>(null)
   const [toast, setToast] = useState('')
   const [role, setRole] = useState<UserRole | null>(null)
   const [roleUserId, setRoleUserId] = useState<string | null>(null)
@@ -310,7 +330,12 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   }, [user.id, catalogAttempt])
 
   const closeRecipeForm = useCallback(() => setShowRecipeForm(false), [])
-  const closeSelectedRecipe = useCallback(() => setSelectedRecipe(null), [])
+  const closeSelectedRecipe = useCallback(() => { setSelectedRecipe(null); setSelectedRecipeSource(null) }, [])
+  /** Capture whether a recipe came from the shared catalog or this user's profile. */
+  function openRecipe(recipe: Recipe) {
+    setSelectedRecipe(recipe)
+    setSelectedRecipeSource(sharedRecipes.some((item) => item.id === recipe.id) ? 'shared' : 'private')
+  }
 
   const initials = user.email?.trim().slice(0, 1).toLocaleUpperCase() || 'U'
   useEffect(() => {
@@ -334,16 +359,20 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     const sharedIds = new Set(sharedRecipes.map((recipe) => recipe.id))
     return [...sharedRecipes, ...data.recipes.filter((recipe) => !sharedIds.has(recipe.id))]
   }, [data.recipes, sharedRecipes])
-  const matches = useMemo(() => matchRecipes(recipes, data.pantry), [recipes, data.pantry])
+  const recipeSearchText = useMemo(() => new Map(recipes.map((recipe) => [recipe, [recipe.title, recipe.source, recipe.category, ...recipe.ingredients.map((item) => item.name)].join(' ').toLocaleLowerCase()])), [recipes])
+  const recipeIngredientCatalog = useMemo(() => getRecipeIngredientCatalog(recipes), [recipes])
+  const recipeMatcher = useMemo(() => createRecipeMatcher(recipes), [recipes])
+  const matches = useMemo(() => recipeMatcher(data.pantry), [recipeMatcher, data.pantry])
   const filteredMatches = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
-    return matches.filter(({ recipe, missing }) => {
-      const searchText = [recipe.title, recipe.source, recipe.category, ...recipe.ingredients.map((item) => item.name)].join(' ').toLocaleLowerCase()
-      return (!needle || searchText.includes(needle)) && (!onlyCookable || section !== 'recipes' || missing.length === 0)
+    return matches.filter((match) => {
+      const { recipe } = match
+      const searchText = recipeSearchText.get(recipe) ?? ''
+      return (!needle || searchText.includes(needle)) && (!onlyCookable || section !== 'recipes' || match.missingCount === 0)
     })
-  }, [matches, onlyCookable, query, section])
+  }, [matches, onlyCookable, query, recipeSearchText, section])
   const shoppingCount = data.shopping.filter((item) => !item.checked).length
-  const cookableCount = matches.filter((item) => item.missing.length === 0).length
+  const cookableCount = matches.filter((item) => item.missingCount === 0).length
   const bestMatches = matches.slice(0, 3)
   const dateLabel = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toLocaleUpperCase()
 
@@ -357,18 +386,31 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     event.preventDefault()
     const value = pantryEntry.trim()
     if (!value) return
-    if (data.pantry.some((item) => normalizeName(item) === normalizeName(value))) {
-      setToast(`${value} is already in your pantry`)
-    } else {
-      updateData((current) => ({ ...current, pantry: [...current.pantry, value].sort((a, b) => a.localeCompare(b)) }))
-      setToast(`${value} added to your pantry`)
+    if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(value))) {
+      setToast(`${value} is already in your pantry. Update its amount in the list below.`)
+      return
     }
+    updateData((current) => ({ ...current, pantry: [...current.pantry, { name: value, amount: pantryAmount.trim() }].sort((a, b) => a.name.localeCompare(b.name)) }))
+    setToast(`${value} added to your pantry`)
     setPantryEntry('')
+    setPantryAmount('')
   }
 
-  /** Remove the selected pantry entry. */
-  function removePantryItem(value: string) {
-    updateData((current) => ({ ...current, pantry: current.pantry.filter((item) => item !== value) }))
+  /** Remove one pantry row, preserving any legacy rows with the same name. */
+  function removePantryItem(index: number) {
+    updateData((current) => ({ ...current, pantry: current.pantry.filter((_, rowIndex) => rowIndex !== index) }))
+  }
+
+  /** Update the amount for one pantry row, including legacy duplicate names. */
+  function updatePantryAmount(index: number, amount: string) {
+    updateData((current) => ({ ...current, pantry: current.pantry.map((item, rowIndex) => rowIndex === index ? { ...item, amount } : item) }))
+  }
+
+  /** Add a recipe ingredient unless an equivalent name is already tracked. */
+  function addCatalogIngredient(name: string) {
+    if (data.pantry.some((item) => normalizeName(item.name) === normalizeName(name))) return
+    updateData((current) => ({ ...current, pantry: [...current.pantry, { name, amount: '' }].sort((a, b) => a.name.localeCompare(b.name)) }))
+    setToast(`${name} added to your pantry`)
   }
 
   /** Add unique normalized ingredient names to the shopping list. */
@@ -408,7 +450,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
 
   /** Add a recipe match’s missing ingredients to the shopping list. */
   function addMissing(match: RecipeMatch) {
-    if (match.missing.length === 0) {
+    if (match.missingCount === 0) {
       setToast('Everything for this recipe is in your pantry')
       return
     }
@@ -451,9 +493,49 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     }
   }
 
+  /**
+   * Add instructions to a blank recipe, requiring verified admin access for shared recipes.
+   * Queue private profile edits or await the shared API update, then refresh the
+   * selected recipe and show a save notice.
+   *
+   * @throws {Error} For blank instructions, more than 12,000 Unicode code points,
+   * unverified shared admin access, or propagated shared update failures.
+   */
+  async function addInstructionsToRecipe(recipe: Recipe, source: RecipeSource, instructions: string) {
+    if (!instructions.trim() || instructionCharacterCount(instructions) > 12000) throw new Error('Enter instructions of 12,000 characters or fewer.')
+    if (source === 'shared') {
+      if (role !== 'admin' || roleUserId !== user.id || roleError) throw new Error('Admin access could not be verified.')
+      let updated: { id: string; instructions: string }
+      try {
+        updated = await updateSharedRecipeInstructions(recipe.id, instructions)
+      } catch (error) {
+        try {
+          const refreshed = await loadSharedRecipes()
+          setSharedRecipes(refreshed)
+          const latest = refreshed.find((item) => item.id === recipe.id)
+          if (latest) setSelectedRecipe((current) => current?.id === latest.id ? latest : current)
+        } catch {
+          // Preserve the original save error when refreshing the catalog also fails.
+        }
+        throw error
+      }
+      setSharedRecipes((current) => current.map((item) => item.id === updated.id ? { ...item, instructions: updated.instructions } : item))
+      setSelectedRecipe((current) => current?.id === updated.id ? { ...current, instructions: updated.instructions } : current)
+    } else {
+      updateData((current) => ({
+        ...current,
+        recipes: current.recipes.map((item) => item.id === recipe.id && !(item.instructions ?? '').trim()
+          ? { ...item, instructions }
+          : item),
+      }))
+      setSelectedRecipe((current) => current?.id === recipe.id ? { ...current, instructions } : current)
+    }
+    if (source === 'shared') setToast('Instructions saved')
+  }
+
   /** Add ingredients from the selected recipe that are not already in the pantry. */
   function addRecipeIngredientsToPantry(recipe: Recipe) {
-    const known = new Set(data.pantry.map(normalizeName))
+    const known = new Set(data.pantry.map((item) => normalizeName(item.name)))
     const newItems = recipe.ingredients.map((ingredient) => ingredient.name.trim()).filter((name) => {
       const normalized = normalizeName(name)
       if (!name || known.has(normalized)) return false
@@ -464,7 +546,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
       setToast('You already have all these ingredients')
       return
     }
-    updateData((current) => ({ ...current, pantry: [...current.pantry, ...newItems].sort((a, b) => a.localeCompare(b)) }))
+    updateData((current) => ({ ...current, pantry: [...current.pantry, ...newItems.map((name) => ({ name, amount: '' }))].sort((a, b) => a.name.localeCompare(b.name)) }))
     setToast(`${newItems.length} ${newItems.length === 1 ? 'ingredient' : 'ingredients'} added to your pantry`)
   }
 
@@ -541,13 +623,13 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
             query={query}
             filteredMatches={filteredMatches}
             bestMatches={bestMatches}
-            onOpen={setSelectedRecipe}
+            onOpen={openRecipe}
             onAddMissing={addMissing}
             onShowRecipes={() => setSection('recipes')}
             onShowPantry={() => setSection('pantry')}
           />}
-          {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={setSelectedRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
-          {section === 'pantry' && <PantryView pantry={data.pantry} entry={pantryEntry} onEntryChange={setPantryEntry} onSubmit={addPantryItem} onRemove={removePantryItem} matches={matches} onOpen={setSelectedRecipe} onAddMissing={addMissing} />}
+          {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={openRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
+          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={recipeIngredientCatalog} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={openRecipe} onAddMissing={addMissing} />}
           {section === 'shopping' && <ShoppingView items={data.shopping} entry={shoppingEntry} onEntryChange={setShoppingEntry} onSubmit={addShoppingEntry} onToggle={toggleShoppingItem} onRemove={(id) => updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => item.id !== id) }))} onClearChecked={clearChecked} />}
 
           <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> {saveStatus === 'saved' ? `Saved to ${user.email ?? 'your profile'}` : saveStatus === 'saving' ? 'Saving to your profile…' : 'Could not save to your profile'}</span></footer>
@@ -559,7 +641,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
       </main>
 
       {showRecipeForm && <RecipeForm onClose={closeRecipeForm} onSave={saveRecipe} onSaveShared={saveSharedRecipe} isAdmin={role === 'admin' && roleUserId === user.id && !roleError} savingShared={catalogSaving} />}
-      {selectedRecipe && <RecipeDetails recipe={selectedRecipe} match={matches.find((item) => item.recipe.id === selectedRecipe.id)} onClose={closeSelectedRecipe} onAddMissing={addMissing} onAddIngredients={addRecipeIngredientsToPantry} />}
+      {selectedRecipe && selectedRecipeSource && <RecipeDetails key={selectedRecipe.id} recipe={selectedRecipe} source={selectedRecipeSource} match={matches.find((item) => item.recipe.id === selectedRecipe.id)} canAddInstructions={selectedRecipeSource === 'private' || (role === 'admin' && roleUserId === user.id && !roleError)} onSaveInstructions={addInstructionsToRecipe} onClose={closeSelectedRecipe} onAddMissing={addMissing} onAddIngredients={addRecipeIngredientsToPantry} />}
       {toast && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={16} /></span>{toast}</div>}
       <span className="sr-only" aria-live="polite">{`${shoppingCount} items on shopping list`}</span>
     </div>
@@ -657,7 +739,12 @@ function RecipeGrid({ matches, onOpen, onAddMissing }: { matches: RecipeMatch[];
 
 /** Render one recipe summary and its available cooking actions. */
 function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void }) {
-  const { recipe, percent, missing } = match
+  const { recipe, percent, missingCount } = match
+  let missingLabel = 'Everything’s in your pantry'
+  if (missingCount > 0) {
+    const preview = match.missingPreview
+    missingLabel = `Missing: ${preview.map((item) => item.name).join(', ')}${missingCount > preview.length ? ` +${missingCount - preview.length}` : ''}`
+  }
   return <article className="recipe-card">
     <button className="card-image" onClick={() => onOpen(recipe)} aria-label={`View ${recipe.title}`} style={{ backgroundImage: `linear-gradient(180deg, transparent 48%, rgba(22, 33, 25, .34)), url("${recipe.image}")` }}>
       <span className="source-pill">{recipe.source}</span><span className="image-time"><Icon name="clock" size={14} />{recipe.time} min</span>
@@ -666,31 +753,72 @@ function RecipeCard({ match, onOpen, onAddMissing }: { match: RecipeMatch; onOpe
       <div className="card-meta"><span>{recipe.category}</span><span className="meta-dot" />{recipe.servings} servings</div>
       <button className="recipe-title" onClick={() => onOpen(recipe)}>{recipe.title}</button>
       <p className="recipe-description">{recipe.description}</p>
-      <div className="match-row"><div className="match-label"><span className="match-icon"><Icon name={percent === 100 ? 'check' : 'leaf'} size={13} /></span><strong>{percent}%</strong> in your pantry</div><span className="match-count">{missing.length === 0 ? 'Ready now' : `${missing.length} to get`}</span></div>
+      <div className="match-row"><div className="match-label"><span className="match-icon"><Icon name={percent === 100 ? 'check' : 'leaf'} size={13} /></span><strong>{percent}%</strong> in your pantry</div><span className="match-count">{missingCount === 0 ? 'Ready now' : `${missingCount} to get`}</span></div>
       <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
-      <div className="card-footer"><span className="missing-preview">{missing.length ? `Missing: ${missing.slice(0, 2).map((item) => item.name).join(', ')}${missing.length > 2 ? ` +${missing.length - 2}` : ''}` : 'Everything’s in your pantry'}</span><button className="round-arrow" onClick={() => missing.length ? onAddMissing(match) : onOpen(recipe)} aria-label={missing.length ? `Add missing ingredients for ${recipe.title}` : `Open ${recipe.title}`}><Icon name={missing.length ? 'plus' : 'arrow'} size={16} /></button></div>
+      <div className="card-footer"><span className="missing-preview">{missingLabel}</span><button className="round-arrow" onClick={() => missingCount ? onAddMissing(match) : onOpen(recipe)} aria-label={missingCount ? `Add missing ingredients for ${recipe.title}` : `Open ${recipe.title}`}><Icon name={missingCount ? 'plus' : 'arrow'} size={16} /></button></div>
     </div>
   </article>
 }
 
 /** Render pantry editing and recipe discovery actions. */
-function PantryView({ pantry, entry, onEntryChange, onSubmit, onRemove, matches, onOpen, onAddMissing }: {
-  pantry: string[]; entry: string; onEntryChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (value: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
+function PantryView({ pantry, catalog, entry, amount, onEntryChange, onAmountChange, onSubmit, onRemove, onAmountUpdate, onAddCatalog, matches, onOpen, onAddMissing }: {
+  pantry: PantryItem[]; catalog: { key: string; name: string }[]; entry: string; amount: string; onEntryChange: (value: string) => void; onAmountChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onRemove: (index: number) => void; onAmountUpdate: (index: number, amount: string) => void; onAddCatalog: (name: string) => void; matches: RecipeMatch[]; onOpen: (recipe: Recipe) => void; onAddMissing: (match: RecipeMatch) => void;
 }) {
-  const cookable = matches.filter((match) => match.missing.length === 0)
+  const [catalogSearch, setCatalogSearch] = useState('')
+  const [catalogVisibleLimit, setCatalogVisibleLimit] = useState(100)
+  const cookable = matches.filter((match) => match.missingCount === 0)
+  const normalizedCatalogSearch = normalizeName(catalogSearch)
+  const filteredCatalog = useMemo(() => normalizedCatalogSearch
+    ? catalog.filter(({ key }) => key.includes(normalizedCatalogSearch))
+    : catalog, [catalog, normalizedCatalogSearch])
+  const visibleCatalog = filteredCatalog.slice(0, catalogVisibleLimit)
+  const pantryByNormalizedName = useMemo(() => {
+    const index = new Map<string, PantryItem[]>()
+    for (const item of pantry) {
+      const key = normalizeName(item.name)
+      const rows = index.get(key)
+      if (rows) rows.push(item)
+      else index.set(key, [item])
+    }
+    return index
+  }, [pantry])
+  const duplicateNameCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const item of pantry) {
+      const key = normalizeName(item.name)
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+  }, [pantry])
+  const duplicateNameOccurrences = new Map<string, number>()
   return <div className="pantry-layout">
     <section className="surface-card pantry-card">
       <div className="surface-heading"><div><div className="section-kicker">WHAT’S ON HAND</div><h2>Your ingredients <span className="pill-count">{pantry.length}</span></h2><p>Add the ingredients you have. We’ll match them to your recipes.</p></div><span className="surface-illustration"><Icon name="basket" size={23} /></span></div>
-      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
-      {pantry.length ? <div className="ingredient-cloud">{pantry.map((item) => <span className="ingredient-chip" key={item}><span className="ingredient-bullet" />{item}<button onClick={() => onRemove(item)} aria-label={`Remove ${item} from pantry`}><Icon name="close" size={13} /></button></span>)}</div> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      <form className="inline-add" onSubmit={onSubmit}><label className="sr-only" htmlFor="pantry-item">Add pantry ingredient</label><input id="pantry-item" value={entry} onChange={(event) => onEntryChange(event.target.value)} placeholder="e.g. cherry tomatoes, brown rice..." /><label className="sr-only" htmlFor="pantry-amount">Amount on hand</label><input id="pantry-amount" value={amount} maxLength={120} aria-describedby="pantry-amount-hint" onChange={(event) => onAmountChange(event.target.value)} placeholder="Amount (e.g. 2 cups)" /><button className="button button-dark" type="submit"><Icon name="plus" size={16} />Add item</button></form>
+      <p id="pantry-amount-hint" className="pantry-amount-hint">Use numeric amounts such as 2 cups, 3 lemons, or 2 salmon fillets. Supported units convert; unknown units compare only when their names match and aren’t converted. Incompatible units or unparseable amounts won’t count; blank amounts match by name.</p>
+      {pantry.length ? <ul className="pantry-items">{pantry.map((item, index) => { const inputId = `pantry-qty-${index}-${normalizeName(item.name).replace(/\s/g, '-')}`; const normalizedName = normalizeName(item.name); const occurrence = (duplicateNameOccurrences.get(normalizedName) ?? 0) + 1; duplicateNameOccurrences.set(normalizedName, occurrence); const duplicate = (duplicateNameCounts.get(normalizedName) ?? 0) > 1; const accessibleName = duplicate ? `${item.name} amount on hand, entry ${occurrence}` : `${item.name} amount on hand`; const removeAccessibleName = duplicate ? `Remove ${item.name} from pantry, entry ${occurrence}` : `Remove ${item.name} from pantry`; return <li key={`${item.name}-${index}`}><span className="ingredient-bullet" />{item.name}<label className="sr-only" htmlFor={inputId}>{accessibleName}</label><input id={inputId} value={item.amount} maxLength={120} placeholder="Amount on hand" onChange={(event) => onAmountUpdate(index, event.target.value)} /><button onClick={() => onRemove(index)} aria-label={removeAccessibleName}><Icon name="close" size={13} /></button></li> })}</ul> : <div className="empty-inline"><Icon name="basket" size={20} /><span>Your pantry is empty. Add a few things you already have.</span></div>}
+      <h3 id="pantry-catalog-heading" className="section-kicker pantry-catalog-heading">ALL RECIPE INGREDIENTS</h3>
+      <label className="sr-only" htmlFor="pantry-catalog-search">Search recipe ingredients</label>
+      <input id="pantry-catalog-search" className="pantry-catalog-search" type="search" value={catalogSearch} onChange={(event) => { setCatalogSearch(event.target.value); setCatalogVisibleLimit(100) }} placeholder="Search recipe ingredients..." />
+      <p className="pantry-catalog-count" aria-live="polite">Showing {visibleCatalog.length} of {filteredCatalog.length} recipe ingredients{normalizedCatalogSearch ? ` matching “${catalogSearch.trim()}”` : ''}.</p>
+      <ul className="pantry-catalog" aria-labelledby="pantry-catalog-heading">{visibleCatalog.map(({ key, name }) => {
+        const tracked = pantryByNormalizedName.get(key) ?? []
+        const amounts = tracked.map((item) => item.amount.trim()).filter(Boolean)
+        const trackedLabel = tracked.length > 1
+          ? `Tracked (${tracked.length} entries)${amounts.length ? ` · ${amounts.join('; ')}` : ''}`
+          : `Tracked${amounts[0] ? ` · ${amounts[0]}` : ''}`
+        return <li key={name}><span>{name}</span>{tracked.length ? <span className="pantry-tracked">{trackedLabel}</span> : <button className="text-button" aria-label={`Add to pantry: ${name}`} onClick={() => onAddCatalog(name)}>Add to pantry <Icon name="plus" size={14} /></button>}</li>
+      })}</ul>
+      {filteredCatalog.length === 0 && <p className="pantry-catalog-empty">No recipe ingredients match your search.</p>}
+      {visibleCatalog.length < filteredCatalog.length && <button className="button button-outline pantry-catalog-more" type="button" onClick={() => setCatalogVisibleLimit((current) => current + 100)}>Show more ingredients</button>}
       <div className="pantry-footnote"><Icon name="leaf" size={15} /> Ingredient names are matched flexibly, regardless of capitalization.</div>
     </section>
     <section className="surface-card pantry-suggestions">
       <div className="section-kicker">YOUR NEXT MEAL</div><h2>{cookable.length ? 'You can make these now' : 'Get close to dinner'}</h2><p>{cookable.length ? 'Every ingredient is already in your pantry.' : 'These recipes are your closest pantry matches.'}</p>
       <div className="mini-match-list">{(cookable.length ? cookable.slice(0, 3) : matches.slice(0, 3)).map((match) => <div className="mini-match" key={match.recipe.id}>
         <div className="mini-match-image" style={{ backgroundImage: `url("${match.recipe.image}")` }} />
-        <div className="mini-match-copy"><strong>{match.recipe.title}</strong><span>{match.missing.length ? `${match.percent}% ready · ${match.missing.length} missing` : `${match.recipe.time} min · all ingredients ready`}</span></div>
-        <button className="round-arrow small" onClick={() => match.missing.length ? onAddMissing(match) : onOpen(match.recipe)} aria-label={match.missing.length ? `Add ingredients for ${match.recipe.title}` : `View ${match.recipe.title}`}><Icon name={match.missing.length ? 'plus' : 'arrow'} size={15} /></button>
+        <div className="mini-match-copy"><strong>{match.recipe.title}</strong><span>{match.missingCount ? `${match.percent}% ready · ${match.missingCount} missing` : `${match.recipe.time} min · all ingredients ready`}</span></div>
+        <button className="round-arrow small" onClick={() => match.missingCount ? onAddMissing(match) : onOpen(match.recipe)} aria-label={match.missingCount ? `Add ingredients for ${match.recipe.title}` : `View ${match.recipe.title}`}><Icon name={match.missingCount ? 'plus' : 'arrow'} size={15} /></button>
       </div>)}</div>
     </section>
   </div>
@@ -734,6 +862,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
   const [time, setTime] = useState('30')
   const [servings, setServings] = useState('2')
   const [ingredientsText, setIngredientsText] = useState('')
+  const [instructions, setInstructions] = useState('')
   const [destination, setDestination] = useState<'personal' | 'shared'>('personal')
   const [error, setError] = useState('')
 
@@ -746,7 +875,9 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
     }).filter((item) => item.name)
     if (!title.trim()) { setError('Give your recipe a name to continue.'); return }
     if (!ingredients.length) { setError('Add at least one ingredient, one per line.'); return }
-    const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients)
+    if (!instructions.trim()) { setError('Add instructions for your recipe to continue.'); return }
+    if (instructionCharacterCount(instructions) > 12000) { setError('Instructions must be 12,000 characters or fewer.'); return }
+    const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients, instructions)
     if (destination === 'shared') {
       try { await onSaveShared(recipe) }
       catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Could not save to the shared catalog.') }
@@ -762,24 +893,64 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
       <label className="form-field"><span>Servings</span><input type="number" min="1" value={servings} onChange={(event) => setServings(event.target.value)} /></label>
       {isAdmin && <label className="form-field wide"><span>Save to</span><select value={destination} onChange={(event) => setDestination(event.target.value as 'personal' | 'shared')}><option value="personal">My private recipes</option><option value="shared">Shared RecipeList catalog</option></select><small className="field-hint">Shared recipes are available to every RecipeList user.</small></label>}
       <label className="form-field wide"><span>Ingredients <small>One per line · ingredient | amount</small></span><textarea value={ingredientsText} onChange={(event) => setIngredientsText(event.target.value)} placeholder={'chickpeas | 1 can\nlemon | 1\nplain yogurt | ½ cup'} rows={5} required /></label>
+      <label className="form-field wide"><span>Instructions</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={'Add each cooking step on a new line.'} rows={6} required /></label>
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit" disabled={savingShared}>{savingShared ? 'Saving…' : 'Save recipe'} {!savingShared && <Icon name="arrow" size={16} />}</button></div>
     </form>
   </Modal>
 }
 
-/** Render a recipe’s ingredients and actions for missing items or pantry updates. */
-function RecipeDetails({ recipe, match, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; match?: RecipeMatch; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
+/** Render recipe instructions and ingredients, with permitted completion of blank instructions and shopping or pantry actions. */
+function RecipeDetails({ recipe, source, match, canAddInstructions, onSaveInstructions, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; source: RecipeSource; match?: RecipeMatch; canAddInstructions: boolean; onSaveInstructions: (recipe: Recipe, source: RecipeSource, instructions: string) => Promise<void>; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
+  const [editingInstructions, setEditingInstructions] = useState(false)
+  const [instructionsDraft, setInstructionsDraft] = useState(recipe.instructions ?? '')
+  const [instructionError, setInstructionError] = useState('')
+  const [savingInstructions, setSavingInstructions] = useState(false)
+  const availableIngredients = useMemo(() => new Set(match?.available ?? []), [match?.available])
+
+  /**
+   * Validate and submit instructions, closing the editor on success.
+   * Validation and save failures appear in the form and retain the draft;
+   * save errors are caught rather than propagated.
+   */
+  async function submitInstructions(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!instructionsDraft.trim()) { setInstructionError('Add instructions to continue.'); return }
+    if (instructionCharacterCount(instructionsDraft) > 12000) { setInstructionError('Instructions must be 12,000 characters or fewer.'); return }
+    setSavingInstructions(true)
+    setInstructionError('')
+    try {
+      await onSaveInstructions(recipe, source, instructionsDraft)
+      setEditingInstructions(false)
+    } catch (error) {
+      setInstructionError(error instanceof Error ? error.message : 'Could not save the instructions. Please try again.')
+    } finally {
+      setSavingInstructions(false)
+    }
+  }
+
   return <Modal onClose={onClose} title={recipe.title} description={`${recipe.source} · ${recipe.time} minutes · ${recipe.servings} servings`} wide>
     <div className="detail-image" style={{ backgroundImage: `linear-gradient(180deg, transparent, rgba(24, 37, 29, .28)), url("${recipe.image}")` }}><span className="source-pill">{recipe.source}</span><span className="detail-category">{recipe.category}</span></div>
     <p className="detail-description">{recipe.description}</p>
-    {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missing.length ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missing.length ? `${match.missing.length} missing` : 'Ready to cook'}</span></div>}
+    <section className="detail-instructions" aria-labelledby="recipe-instructions-heading"><span className="section-kicker">HOW TO MAKE IT</span><h3 id="recipe-instructions-heading">Instructions</h3>{recipe.instructions?.trim()
+      ? <p>{recipe.instructions}</p>
+      : <>
+        <p className="detail-instructions-empty">No instructions have been added for this recipe yet.</p>
+        {canAddInstructions && !editingInstructions && <button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(true) }}>Add instructions</button>}
+        {editingInstructions && <form className="recipe-form instruction-editor" onSubmit={submitInstructions}>
+          <label className="form-field wide"><span>Instructions</span><textarea aria-label="Recipe instructions" autoFocus value={instructionsDraft} onChange={(event) => setInstructionsDraft(event.target.value)} placeholder="Add each cooking step on a new line." rows={6} required /></label>
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(false) }}>Cancel</button><button className="button button-dark" type="submit" disabled={savingInstructions}>{savingInstructions ? 'Saving…' : 'Save instructions'}</button></div>
+        </form>}
+      </>}
+      {instructionError && <div className="form-error" role="alert">{instructionError}</div>}
+    </section>
+    {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missingCount ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missingCount ? `${match.missingCount} missing` : 'Ready to cook'}</span></div>}
     <div className="detail-ingredients-heading"><div><span className="section-kicker">THE SHOPPING LIST</span><h3>Ingredients <small>{recipe.ingredients.length}</small></h3></div><button className="text-button" onClick={() => onAddIngredients(recipe)}>Add all to pantry <Icon name="plus" size={15} /></button></div>
-    <ul className="detail-ingredients">{recipe.ingredients.map((ingredient) => {
-      const isAvailable = Boolean(match?.available.some((item) => normalizeName(item.name) === normalizeName(ingredient.name)))
-      return <li key={ingredient.name} className={isAvailable ? 'available' : ''}><span className="detail-ingredient-check">{isAvailable && <Icon name="check" size={13} />}</span><span>{ingredient.name}</span><span className="detail-amount">{ingredient.amount}</span></li>
+    <ul className="detail-ingredients">{recipe.ingredients.map((ingredient, index) => {
+      const isAvailable = availableIngredients.has(ingredient)
+      return <li key={`${ingredient.name}-${index}`} className={isAvailable ? 'available' : ''}><span className="detail-ingredient-check">{isAvailable && <Icon name="check" size={13} />}</span><span>{ingredient.name}</span><span className="detail-amount">{ingredient.amount}</span></li>
     })}</ul>
-    {match && <div className="modal-actions detail-actions"><span className="detail-hint">{match.missing.length ? `${match.missing.length} ingredients still to get` : 'You have everything you need'}</span><button className="button button-dark" onClick={() => onAddMissing(match)}>{match.missing.length ? 'Add missing to list' : 'Ready to cook'} <Icon name={match.missing.length ? 'plus' : 'check'} size={16} /></button></div>}
+    {match && <div className="modal-actions detail-actions"><span className="detail-hint">{match.missingCount ? `${match.missingCount} ingredients still to get` : 'You have everything you need'}</span><button className="button button-dark" onClick={() => onAddMissing(match)}>{match.missingCount ? 'Add missing to list' : 'Ready to cook'} <Icon name={match.missingCount ? 'plus' : 'check'} size={16} /></button></div>}
   </Modal>
 }
 
