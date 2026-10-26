@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { promoteAdmin, validateAdminEmail } from '../../server/admin-operations.js'
 import { appMigrations, applyAppMigrations, assertSafeMigrationPlan } from '../../server/migration-operations.js'
+import { blankInstructionsPredicateSql } from '../../server/instructions-sql.js'
 import { demoRecipes } from '../../src/data.js'
 
 function migrationFile(version: string): string {
@@ -44,10 +45,11 @@ describe('migration operations', () => {
     expect(instructionsSchema).toContain("ADD COLUMN IF NOT EXISTS instructions text NOT NULL DEFAULT ''")
     expect(instructionsSchema).toContain('CHECK (length(instructions) <= 12000)')
     const backfillSchema = await readFile(resolve(process.cwd(), 'server/migrations', migrationFile('0005_recipe_instruction_backfill')), 'utf8')
+    const blankPredicate = blankInstructionsPredicateSql.replace('%column%', 'instructions')
     for (const recipe of demoRecipes) {
-      expect(backfillSchema).toContain(`SET instructions = '${recipe.instructions.replaceAll("'", "''")}'\nWHERE id = '${recipe.id}' AND instructions ~ '^[[:space:]]*$';`)
+      expect(backfillSchema).toContain(`SET instructions = '${recipe.instructions.replaceAll("'", "''")}'\nWHERE id = '${recipe.id}' AND ${blankPredicate};`)
     }
-    expect(backfillSchema.split("AND instructions ~ '^[[:space:]]*$';").length - 1).toBe(demoRecipes.length)
+    expect(backfillSchema.split(`AND ${blankPredicate};`).length - 1).toBe(demoRecipes.length)
   })
 
   it('blocks schema problems and unsafe changes before migrations run', () => {

@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
+import { blankInstructionsPredicateSql } from './instructions-sql.js'
 import { validateAppData, validateRecipe, validateRecipeInstructions } from './validation.js'
 
 export type ServerSession = {
@@ -198,7 +199,7 @@ export function createServerApp(options: ServerAppOptions) {
     if (!req.body || !validateRecipeInstructions(req.body.instructions)) return res.status(400).json({ error: 'Invalid recipe instructions' })
     try {
       const result = await pool.query<{ id: string; instructions: string }>(
-        "UPDATE recipes SET instructions = $2 WHERE id = $1 AND instructions ~ '^[[:space:]\uFEFF]*$' RETURNING id, instructions",
+        `UPDATE recipes SET instructions = $2 WHERE id = $1 AND ${blankInstructionsPredicateSql.replace('%column%', 'instructions')} RETURNING id, instructions`,
         [req.params.id, req.body.instructions],
       )
       if (result.rows[0]) return res.json(result.rows[0])

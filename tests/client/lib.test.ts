@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createId, ingredientNamesEquivalent, makeRecipe, matchRecipes, normalizeName, parseAppData } from '../../src/lib'
+import { createId, createRecipeMatcher, ingredientNamesEquivalent, makeRecipe, matchRecipes, normalizeName, parseAppData } from '../../src/lib'
 import type { AppData, Ingredient, Recipe } from '../../src/types'
 
 const recipe = (id: string, title: string, ingredients: Ingredient[], time = 30): Recipe => ({
@@ -64,6 +64,18 @@ describe('app data validation', () => {
 })
 
 describe('recipe matching and construction', () => {
+  it('reuses prepared recipe metadata and matches the compatibility wrapper as pantry stock changes', () => {
+    const recipes = [recipe('prepared-rice', 'Rice', [{ name: 'rice', amount: '2 cups' }, { name: 'rice', amount: '1 cup' }])]
+    const matcher = createRecipeMatcher(recipes)
+    const enoughPantry = [{ name: 'rice', amount: '2 cups' }, { name: 'rice', amount: '1 cup' }]
+    const shortPantry = [{ name: 'rice', amount: '2 cups' }]
+
+    expect(matcher(enoughPantry)).toEqual(matchRecipes(recipes, enoughPantry))
+    expect(matcher(enoughPantry)[0]?.available).toEqual(recipes[0]?.ingredients)
+    expect(matcher(shortPantry)).toEqual(matchRecipes(recipes, shortPantry))
+    expect(matcher(shortPantry)[0]?.available).toEqual([recipes[0]?.ingredients[0]])
+  })
+
   it('reports exact availability, missing ingredients, and rounded percentages for protein alternatives', () => {
     const recipes = [
       recipe('poultry', 'Poultry dinner', [{ name: 'Ground chicken', amount: '1 lb' }, { name: 'beef strips', amount: '8 oz' }, { name: 'chicken stock', amount: '1 cup' }]),
@@ -157,6 +169,32 @@ describe('recipe matching and construction', () => {
     expect(matchRecipes([bunchRecipe], [{ name: 'parsley', amount: '1 bunch' }])[0]?.missing).toEqual(bunchRecipe.ingredients)
     const leavesRecipe = recipe('leaves', 'Salad', [{ name: 'lettuce', amount: '2 leaves' }])
     expect(matchRecipes([leavesRecipe], [{ name: 'lettuce', amount: '1 leaf' }])[0]?.missing).toEqual(leavesRecipe.ingredients)
+  })
+  it('compares ingredient count nouns with unitless and container counts without accepting short stock', () => {
+    const lemon = recipe('lemon-count', 'Lemons', [{ name: 'lemon', amount: '1' }])
+    expect(matchRecipes([lemon], [{ name: 'lemons', amount: '2 lemons' }])[0]?.available).toEqual(lemon.ingredients)
+
+    const peppers = recipe('pepper-count', 'Peppers', [{ name: 'bell pepper', amount: '2' }])
+    expect(matchRecipes([peppers], [{ name: 'bell peppers', amount: '1 bell pepper' }])[0]?.missing).toEqual(peppers.ingredients)
+    expect(matchRecipes([peppers], [{ name: 'bell peppers', amount: '2 bell peppers' }])[0]?.available).toEqual(peppers.ingredients)
+
+    const redPeppers = recipe('red-pepper-count', 'Red Peppers', [{ name: 'red bell pepper', amount: '2' }])
+    expect(matchRecipes([redPeppers], [{ name: 'red bell pepper', amount: '2 bell peppers' }])[0]?.available).toEqual(redPeppers.ingredients)
+
+    const garlic = recipe('garlic-cloves', 'Garlic', [{ name: 'garlic', amount: '2 cloves' }])
+    expect(matchRecipes([garlic], [{ name: 'garlic', amount: '1 clove' }])[0]?.missing).toEqual(garlic.ingredients)
+    expect(matchRecipes([garlic], [{ name: 'garlic', amount: '2 cloves' }])[0]?.available).toEqual(garlic.ingredients)
+
+    const canned = recipe('canned-tomatoes', 'Tomatoes', [{ name: 'tomatoes', amount: '1 can' }])
+    expect(matchRecipes([canned], [{ name: 'tomatoes', amount: '1 tin' }])[0]?.available).toEqual(canned.ingredients)
+    expect(matchRecipes([canned], [{ name: 'tomatoes', amount: '1 package' }])[0]?.missing).toEqual(canned.ingredients)
+
+    const unitless = recipe('unitless-rice', 'Rice', [{ name: 'rice', amount: '2' }])
+    expect(matchRecipes([unitless], [{ name: 'rice', amount: '2 scoops' }])[0]?.missing).toEqual(unitless.ingredients)
+  })
+  it('keeps zero-quantity requirements available when a matching pantry ingredient exists', () => {
+    const zero = recipe('zero-rice', 'Rice', [{ name: 'rice', amount: '0 cup' }])
+    expect(matchRecipes([zero], [{ name: 'rice', amount: '2 oz' }])[0]?.available).toEqual(zero.ingredients)
   })
   it('parses mixed Unicode fractions and rejects invalid quantities for measurable requirements', () => {
     const row = recipe('fractions', 'Fractions', [

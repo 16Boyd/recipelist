@@ -4,6 +4,12 @@
 
 RecipeList is a recipe and pantry planner. Browse the shared recipe catalog, track ingredients on hand, see which dinners are closest to ready, and turn missing ingredients into a shopping list. Accounts, pantry data, and shopping lists are stored in PostgreSQL on the server; the browser does not store app data.
 
+## Pantry and recipe readiness
+
+The Pantry page lists every ingredient used by your recipes, so you can add items even before you have them. Enter an amount on hand, such as `2 cups` or `3 lemons`, to compare your stock with the quantities each recipe calls for. Recipe readiness and missing-ingredient lists account for those quantities, including repeated uses of the same ingredient.
+
+Existing pantry entries with no amount continue to match by ingredient name alone. For measurable recipe requirements, incompatible units or unparseable nonblank pantry amounts do not count as available stock; enter a comparable amount and unit to check readiness accurately.
+
 ## Deployment options
 
 - **Docker Compose:** follow the guide below to run the app and PostgreSQL together in containers.

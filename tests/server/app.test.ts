@@ -61,8 +61,7 @@ describe('HTTP app factory', () => {
           const instructions = values?.[1]
           const rowIndex = state.recipeRows.findIndex((row) => Boolean(row) && typeof row === 'object' && (row as { id?: unknown }).id === id)
           const current = rowIndex >= 0 ? state.recipeRows[rowIndex] as { id: string; instructions?: string } : undefined
-          const acceptsBomWhitespace = sql.includes('\uFEFF')
-          const isSqlWhitespace = (value: string) => [...value].every((character) => /[\t\n\v\f\r ]/.test(character) || (acceptsBomWhitespace && character === '\uFEFF'))
+          const isSqlWhitespace = (value: string) => value.trim() === ''
           if (!current || !isSqlWhitespace(current.instructions ?? '') || typeof instructions !== 'string') return { rows: [], rowCount: 0 }
           const updated = { ...current, instructions }
           state.recipeRows = state.recipeRows.map((row, index) => index === rowIndex ? updated : row)
@@ -224,9 +223,9 @@ describe('HTTP app factory', () => {
     expect(state.recipeRows).toEqual([{ ...recipe, instructions: 'Roast the vegetables.\nServe warm.' }])
   })
 
-  it('completes shared recipes whose legacy instructions contain only a byte order mark', async () => {
+  it.each(['\uFEFF', '\u00A0', '\u1680', '\u2003', '\u2028', '\u2029', '\u202F', '\u205F', '\u3000'])('completes shared recipes whose legacy instructions contain only trim whitespace (%s)', async (blankInstructions) => {
     state.role = 'admin'
-    state.recipeRows = [{ ...recipe, instructions: '\uFEFF' }]
+    state.recipeRows = [{ ...recipe, instructions: blankInstructions }]
     const instructions = 'Brown the chicken.\nServe warm.'
     const completed = await request('/api/recipes/chicken-soup/instructions', {
       method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ instructions }),

@@ -105,8 +105,9 @@ describe('pantry, recipes, and shopping list flows', () => {
     const user = userEvent.setup()
     await mountReady({ ...userData(), pantry: [{ name: 'rice', amount: '1 cup' }, { name: 'rice', amount: '3 cups' }] }, [])
     await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
-    const amounts = screen.getAllByLabelText('rice amount on hand')
+    const amounts = screen.getAllByLabelText(/rice amount on hand, entry \d/)
     expect(amounts).toHaveLength(2)
+    expect(amounts.map((input) => input.getAttribute('aria-label'))).toEqual([null, null])
     await user.clear(amounts[1]!)
     await user.type(amounts[1]!, '4 cups')
     await waitFor(() => {
@@ -242,6 +243,7 @@ describe('pantry, recipes, and shopping list flows', () => {
       expect(saved?.recipes[0]).toEqual({ ...privateRecipe, instructions })
     })
     expect(screen.getByRole('heading', { name: 'Instructions' }).parentElement).toHaveTextContent('Roast chicken. Serve with rice.')
+    expect(screen.queryByText('Instructions saved')).not.toBeInTheDocument()
   })
 
   it('allows 12,000 non-BMP code points when completing legacy shared instructions', async () => {

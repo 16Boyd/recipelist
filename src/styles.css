@@ -245,11 +245,7 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
 .inline-add input:focus { border-color: #b6c8b2; box-shadow: 0 0 0 3px rgba(77, 118, 85, .07); }
 .inline-add input::placeholder { color: #adb1a8; }
 .inline-add .button { flex: 0 0 auto; }
-.ingredient-cloud { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 19px; }
-.ingredient-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 7px 0 9px; border: 1px solid #e8ece3; border-radius: 8px; background: #f6f8f2; color: #586659; font-size: 9px; }
 .ingredient-bullet { width: 5px; height: 5px; border-radius: 50%; background: #82a17c; }
-.ingredient-chip button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #9da59a; }
-.ingredient-chip button:hover { background: #e9eee3; color: #506a52; }
 .pantry-footnote { display: flex; align-items: center; gap: 6px; margin-top: 21px; padding-top: 13px; border-top: 1px solid #f0eee8; color: #a0a69c; font-size: 8px; }
 .pantry-footnote svg { color: #8da187; }
 .empty-inline { display: flex; align-items: center; gap: 9px; margin-top: 20px; padding: 17px; border-radius: 9px; background: #f7f7f1; color: #929a91; font-size: 10px; }
@@ -474,8 +470,6 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
   .inline-add { gap: 6px; }
   .inline-add input { height: 37px; padding: 0 8px; font-size: 9px; }
   .inline-add .button { min-height: 37px; gap: 4px; padding: 0 8px; font-size: 9px; }
-  .ingredient-cloud { gap: 6px; margin-top: 15px; }
-  .ingredient-chip { min-height: 28px; gap: 5px; padding-left: 7px; font-size: 8px; }
   .pantry-footnote { font-size: 7px; }
   .shopping-aside { grid-template-columns: 1fr; }
   .market-card { min-height: 145px; }

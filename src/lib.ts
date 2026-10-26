@@ -135,56 +135,70 @@ const vulgarFractions: Readonly<Record<string, string>> = {
   '⅙': '1/6', '⅚': '5/6', '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8',
   '⅐': '1/7', '⅑': '1/9', '⅒': '1/10',
 }
-const quantityPattern = /^((?:\d+\/\d+|\d+(?:\.\d+)?))(?:\s+((?:\d+\/\d+|\d+(?:\.\d+)?)))?\s*([\p{L}]+)?$/u
+const quantityPattern = /^((?:\d+\/\d+|\d+(?:\.\d+)?))(?:\s+((?:\d+\/\d+|\d+(?:\.\d+)?)))?\s*([\p{L}\s-]+)?$/u
+const countNounUnits = new Set(['stick', 'jar', 'tin', 'packet', 'head', 'bunch', 'clove', 'can'])
+const quantityUnits: Readonly<Record<string, readonly [string, number]>> = {
+  tsp: ['volume', 4.92892], teaspoon: ['volume', 4.92892], tbsp: ['volume', 14.7868], tablespoon: ['volume', 14.7868],
+  cup: ['volume', 236.588], ml: ['volume', 1], milliliter: ['volume', 1], l: ['volume', 1000], liter: ['volume', 1000],
+  g: ['weight', 1], gram: ['weight', 1], kg: ['weight', 1000], kilogram: ['weight', 1000], oz: ['weight', 28.3495], ounce: ['weight', 28.3495], lb: ['weight', 453.592], pound: ['weight', 453.592],
+  each: ['count:each', 1], can: ['count:can', 1], clove: ['count:clove', 1], piece: ['count:piece', 1], package: ['count:package', 1],
+  fillet: ['count:fillet', 1], breast: ['count:breast', 1], thigh: ['count:thigh', 1], wing: ['count:wing', 1], drumstick: ['count:drumstick', 1],
+  slice: ['count:slice', 1], strip: ['count:strip', 1], stalk: ['count:stalk', 1], sprig: ['count:sprig', 1], head: ['count:head', 1],
+  bunch: ['count:bunch', 1], ear: ['count:ear', 1], bulb: ['count:bulb', 1], sheet: ['count:sheet', 1], leaf: ['count:leaf', 1],
+}
+
+/** Parse a nonnegative number or fraction, returning zero for absent input and undefined for invalid values. */
+function parseQuantityNumber(raw?: string): number | undefined {
+  if (!raw) return 0
+  if (!raw.includes('/')) {
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+  }
+  const [numeratorText, denominatorText] = raw.split('/')
+  const numerator = Number(numeratorText)
+  const denominator = Number(denominatorText)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0 || numerator < 0 || denominator < 0) return undefined
+  const parsed = numerator / denominator
+  return Number.isFinite(parsed) ? parsed : undefined
+}
 
 /**
  * Parse supported nonnegative numbers and fractions into comparable quantities.
- * Volumes use milliliters, weights use grams, and count units remain distinct.
- * Unitless amounts use each; unknown units retain a normalized unit name.
+ * Volumes use milliliters and weights use grams. Unitless amounts, common
+ * count containers, and count nouns matching the ingredient use each; other
+ * count units remain distinct.
  *
  * @returns The quantity and comparison dimension, or undefined for unparseable
  * or nonfinite amounts.
  */
-function parseQuantity(value: string): { value: number; dimension: string } | undefined {
+function parseQuantity(value: string, ingredientName = ''): { value: number; dimension: string } | undefined {
   const normalized = value.trim().toLocaleLowerCase().replace(/[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞⅐⅑⅒]/g, (fraction) => ` ${vulgarFractions[fraction]}`).trim()
   const match = normalized.match(quantityPattern)
   if (!match) return undefined
-  /** Parse a nonnegative number or fraction, returning zero for absent input and undefined for invalid values. */
-  const parseNumber = (raw?: string): number | undefined => {
-    if (!raw) return 0
-    if (!raw.includes('/')) {
-      const parsed = Number(raw)
-      return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
-    }
-    const [numeratorText, denominatorText] = raw.split('/')
-    const numerator = Number(numeratorText)
-    const denominator = Number(denominatorText)
-    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0 || numerator < 0 || denominator < 0) return undefined
-    const parsed = numerator / denominator
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-  const whole = parseNumber(match[1])
-  const fraction = parseNumber(match[2])
+  const whole = parseQuantityNumber(match[1])
+  const fraction = parseQuantityNumber(match[2])
   if (whole === undefined || fraction === undefined) return undefined
   const count = whole + fraction
   if (!Number.isFinite(count)) return undefined
-  const rawUnit = match[3] ?? 'each'
+  const rawUnit = match[3]?.trim() ?? 'each'
   const unit = rawUnit === 'leaves'
     ? 'leaf'
     : rawUnit.replace(/(ches|shes|sses|xes|zes|oes)$/, (plural) => plural.slice(0, -2)).replace(/s$/, '')
-  const units: Record<string, [string, number]> = {
-    tsp: ['volume', 4.92892], teaspoon: ['volume', 4.92892], tbsp: ['volume', 14.7868], tablespoon: ['volume', 14.7868],
-    cup: ['volume', 236.588], ml: ['volume', 1], milliliter: ['volume', 1], l: ['volume', 1000], liter: ['volume', 1000],
-    g: ['weight', 1], gram: ['weight', 1], kg: ['weight', 1000], kilogram: ['weight', 1000], oz: ['weight', 28.3495], ounce: ['weight', 28.3495], lb: ['weight', 453.592], pound: ['weight', 453.592],
-    each: ['count:each', 1], can: ['count:can', 1], clove: ['count:clove', 1], piece: ['count:piece', 1], package: ['count:package', 1],
-    fillet: ['count:fillet', 1], breast: ['count:breast', 1], thigh: ['count:thigh', 1], wing: ['count:wing', 1], drumstick: ['count:drumstick', 1],
-    slice: ['count:slice', 1], strip: ['count:strip', 1], stalk: ['count:stalk', 1], sprig: ['count:sprig', 1], head: ['count:head', 1],
-    bunch: ['count:bunch', 1], ear: ['count:ear', 1], bulb: ['count:bulb', 1], sheet: ['count:sheet', 1], leaf: ['count:leaf', 1],
+  if (countNounUnits.has(unit)) return { value: count, dimension: 'count:each' }
+  const conversion = quantityUnits[unit]
+  if (conversion) {
+    const converted = count * conversion[1]
+    return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
   }
-  const conversion = units[unit]
-  if (!conversion) return { value: count, dimension: `unknown:${unit}` }
-  const converted = count * conversion[1]
-  return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
+  const unitName = normalizeName(rawUnit)
+  const ingredientKey = normalizeName(ingredientName)
+  const ingredientWords = ingredientKey.split(' ')
+  const unitWords = unitName.split(' ')
+  const isIngredientNoun = unitWords.length > 0
+    && unitWords.length <= ingredientWords.length
+    && ingredientWords.slice(-unitWords.length).join(' ') === unitName
+  if (isIngredientNoun) return { value: count, dimension: 'count:each' }
+  return { value: count, dimension: `unknown:${unit}` }
 }
 
 /**
@@ -197,73 +211,106 @@ function parseQuantity(value: string): { value: number; dimension: string } | un
  * measurable requirement.
  * Each recipe is evaluated independently without changing the pantry or recipes.
  */
-export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
-  const pantryRows = pantry.map((item, index) => {
-    const normalizedName = normalizeName(item.name)
-    return {
-      index,
-      normalizedName,
-      family: proteinFamilyFromNormalizedName(normalizedName),
-      quantity: parseQuantity(item.amount),
-      hasBlankAmount: !item.amount.trim(),
+type IngredientMetadata = { normalizedName: string; family?: string }
+type PreparedIngredient = { ingredient: Ingredient; required?: { value: number; dimension: string }; groupKey: string }
+
+/**
+ * Prepare immutable recipe metadata once, then evaluate it against changing pantry stock.
+ * Recreate the matcher whenever recipes or ingredient rows change; the app does this
+ * through its immutable recipe state and memoizes the returned matcher by recipe list.
+ */
+export function createRecipeMatcher(recipes: Recipe[]): (pantry: PantryItem[]) => RecipeMatch[] {
+  const ingredientNameCache = new Map<string, IngredientMetadata>()
+  /** Cache normalized ingredient names and protein families for the matcher lifetime. */
+  function getIngredientName(name: string): IngredientMetadata {
+    let metadata = ingredientNameCache.get(name)
+    if (!metadata) {
+      const normalizedName = normalizeName(name)
+      metadata = { normalizedName, family: proteinFamilyFromNormalizedName(normalizedName) }
+      ingredientNameCache.set(name, metadata)
     }
-  })
-  const pantryByName = new Map<string, typeof pantryRows[number][]>()
-  const pantryByFamily = new Map<string, typeof pantryRows[number][]>()
-  for (const row of pantryRows) {
-    const namedRows = pantryByName.get(row.normalizedName) ?? []
-    namedRows.push(row)
-    pantryByName.set(row.normalizedName, namedRows)
-    if (row.family) {
-      const familyRows = pantryByFamily.get(row.family) ?? []
-      familyRows.push(row)
-      pantryByFamily.set(row.family, familyRows)
-    }
+    return metadata
   }
 
-  return recipes.map((recipe) => {
-    const available: Ingredient[] = []
-    const missing: Ingredient[] = []
-    const remainingAmounts = new Map<number, number>()
-    recipe.ingredients.forEach((ingredient) => {
-      const required = parseQuantity(ingredient.amount)
-      const normalizedName = normalizeName(ingredient.name)
-      const family = proteinFamilyFromNormalizedName(normalizedName)
-      const equivalent = family
-        ? pantryByFamily.get(family) ?? []
-        : pantryByName.get(normalizedName) ?? []
-      if (!equivalent.length) {
-        missing.push(ingredient)
-        return
+  const preparedRecipes = recipes.map((recipe) => ({
+    recipe,
+    ingredients: recipe.ingredients.map((ingredient): PreparedIngredient => {
+      const { normalizedName, family } = getIngredientName(ingredient.name)
+      return {
+        ingredient,
+        required: parseQuantity(ingredient.amount, ingredient.name),
+        groupKey: family ? `family:${family}` : `name:${normalizedName}`,
       }
-      if (!required) {
-        available.push(ingredient)
-        return
-      }
+    }),
+  }))
 
-      const comparable = equivalent.filter(({ quantity }) => quantity?.dimension === required.dimension)
-      const total = comparable.reduce((sum, { index, quantity }) => sum + (remainingAmounts.get(index) ?? quantity?.value ?? 0), 0)
-      const tolerance = Math.max(total, required.value) * 1e-5
-      if (total + tolerance >= required.value) {
-        let needed = required.value
-        for (const { index, quantity } of comparable) {
-          const remaining = remainingAmounts.get(index) ?? quantity?.value ?? 0
-          const consumed = Math.min(remaining, needed)
-          remainingAmounts.set(index, Math.max(0, remaining - consumed))
-          needed -= consumed
-          if (needed <= 0) break
-        }
-        available.push(ingredient)
-      } else if (!comparable.length && equivalent.some(({ hasBlankAmount }) => hasBlankAmount)) {
-        // Preserve name-presence matching for legacy pantry entries without tracked amounts.
-        available.push(ingredient)
-      } else {
-        missing.push(ingredient)
+  return (pantry: PantryItem[]): RecipeMatch[] => {
+    const pantryByGroup = new Map<string, { hasBlankAmount: boolean; quantities: Map<string, number> }>()
+    for (const item of pantry) {
+      const { normalizedName, family } = getIngredientName(item.name)
+      const groupKey = family ? `family:${family}` : `name:${normalizedName}`
+      let group = pantryByGroup.get(groupKey)
+      if (!group) {
+        group = { hasBlankAmount: false, quantities: new Map() }
+        pantryByGroup.set(groupKey, group)
       }
-    })
-    const percent = recipe.ingredients.length ? Math.round((available.length / recipe.ingredients.length) * 100) : 0
-    return { recipe, available, missing, percent }
-  }).sort((a, b) => b.percent - a.percent || a.missing.length - b.missing.length || a.recipe.time - b.recipe.time)
+      if (!item.amount.trim()) group.hasBlankAmount = true
+      const quantity = parseQuantity(item.amount, item.name)
+      if (quantity) group.quantities.set(quantity.dimension, (group.quantities.get(quantity.dimension) ?? 0) + quantity.value)
+    }
+
+    return preparedRecipes.map(({ recipe, ingredients }) => {
+      const available: Ingredient[] = []
+      const missing: Ingredient[] = []
+      const consumedByGroup = new Map<string, Map<string, number>>()
+      for (const { ingredient, required, groupKey } of ingredients) {
+        const group = pantryByGroup.get(groupKey)
+        if (!group) {
+          missing.push(ingredient)
+          continue
+        }
+        if (!required) {
+          available.push(ingredient)
+          continue
+        }
+        if (required.value === 0) {
+          available.push(ingredient)
+          continue
+        }
+
+        const total = group.quantities.get(required.dimension)
+        const consumedForGroup = consumedByGroup.get(groupKey)
+        const consumed = consumedForGroup?.get(required.dimension) ?? 0
+        const remaining = total === undefined ? undefined : Math.max(0, total - consumed)
+        if (remaining === undefined && group.hasBlankAmount) {
+          // Preserve name-presence matching for legacy pantry entries without tracked amounts.
+          available.push(ingredient)
+          continue
+        }
+        if (remaining === undefined) {
+          missing.push(ingredient)
+          continue
+        }
+
+        const tolerance = Math.max(remaining, required.value) * 1e-5
+        if (remaining + tolerance >= required.value) {
+          const dimensions = consumedForGroup ?? new Map<string, number>()
+          dimensions.set(required.dimension, consumed + Math.min(remaining, required.value))
+          if (!consumedForGroup) consumedByGroup.set(groupKey, dimensions)
+          available.push(ingredient)
+        } else {
+          missing.push(ingredient)
+        }
+      }
+      const percent = recipe.ingredients.length ? Math.round((available.length / recipe.ingredients.length) * 100) : 0
+      return { recipe, available, missing, percent }
+    }).sort((a, b) => b.percent - a.percent || a.missing.length - b.missing.length || a.recipe.time - b.recipe.time)
+  }
+}
+
+/** Match recipes against pantry stock by preparing recipe metadata for one call. */
+export function matchRecipes(recipes: Recipe[], pantry: PantryItem[]): RecipeMatch[] {
+  return createRecipeMatcher(recipes)(pantry)
 }
 
 /** Create a personal recipe with normalized defaults and a newly generated ID. */

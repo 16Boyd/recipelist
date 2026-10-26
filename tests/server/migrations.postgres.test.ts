@@ -4,6 +4,7 @@ import { Pool } from 'pg'
 import { getMigrations } from 'better-auth/db/migration'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { appMigrations, applyAppMigrations, assertSafeMigrationPlan } from '../../server/migration-operations.js'
+import { blankInstructionsPredicateSql } from '../../server/instructions-sql.js'
 import { assertSafeMigrationTestDatabase } from './migration-test-safety.js'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
@@ -65,6 +66,21 @@ suite('PostgreSQL migration integration (dedicated TEST_DATABASE_URL and explici
     expect(types.get('recipes.created_by')).toBe('uuid')
     expect(types.get('recipes.id')).toBe('text')
     await expect(pool.query(`INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") VALUES ('not-a-uuid', 'x', 'x@example.invalid', false, now(), now())`)).rejects.toThrow()
+  })
+
+  it('uses the JavaScript trim whitespace set in the shared instruction blank predicate', async () => {
+    const predicate = blankInstructionsPredicateSql.replace('%column%', '$1')
+    const trimWhitespace = [
+      '\u0009', '\u000A', '\u000B', '\u000C', '\u000D', '\u0020', '\u00A0', '\u1680',
+      '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007',
+      '\u2008', '\u2009', '\u200A', '\u2028', '\u2029', '\u202F', '\u205F', '\u3000', '\uFEFF',
+    ]
+    for (const whitespace of trimWhitespace) {
+      const { rows } = await pool.query<{ blank: boolean }>(`SELECT ${predicate} AS blank`, [whitespace])
+      expect(rows[0]?.blank, `U+${whitespace.codePointAt(0)?.toString(16).toUpperCase()}`).toBe(true)
+    }
+    const { rows } = await pool.query<{ blank: boolean }>(`SELECT ${predicate} AS blank`, ['\u00A0 instructions \u2003'])
+    expect(rows[0]?.blank).toBe(false)
   })
 
   /** Recreate the pre-fix app tables and mark migrations 0001/0002 as applied. */
