@@ -1,5 +1,5 @@
 import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
-import { validateAppData, validateRecipe } from './validation.js'
+import { validateAppData, validateRecipe, validateRecipeInstructions } from './validation.js'
 
 export type ServerSession = {
   user: { id: string; email: string; name: string }
@@ -190,6 +190,21 @@ export function createServerApp(options: ServerAppOptions) {
     try {
       const result = await pool.query('SELECT id, title, source, category, time, servings, image, description, instructions, ingredients FROM recipes ORDER BY title, id')
       res.json(result.rows)
+    } catch (error) { next(error) }
+  })
+
+  app.put('/api/recipes/:id/instructions', rejectOriginAndContentType, loadSession, requireFreshMfa, async (req: AuthedRequest, res, next) => {
+    if (req.recipeListRole !== 'admin') return res.status(403).json({ error: 'Admin access required' })
+    if (!req.body || !validateRecipeInstructions(req.body.instructions)) return res.status(400).json({ error: 'Invalid recipe instructions' })
+    try {
+      const result = await pool.query<{ id: string; instructions: string }>(
+        "UPDATE recipes SET instructions = $2 WHERE id = $1 AND instructions ~ '^[[:space:]]*$' RETURNING id, instructions",
+        [req.params.id, req.body.instructions],
+      )
+      if (result.rows[0]) return res.json(result.rows[0])
+      const existing = await pool.query<{ id: string }>('SELECT id FROM recipes WHERE id = $1', [req.params.id])
+      if (!existing.rows[0]) return res.status(404).json({ error: 'Recipe not found' })
+      return res.status(409).json({ error: 'Recipe instructions have already been added' })
     } catch (error) { next(error) }
   })
 

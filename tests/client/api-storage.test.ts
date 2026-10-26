@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiRequest, errorMessage } from '../../src/api'
-import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from '../../src/recipeStorage'
+import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes, updateSharedRecipeInstructions } from '../../src/recipeStorage'
 import { loadProfile, saveProfile } from '../../src/profileStorage'
 import type { AppData, Recipe } from '../../src/types'
 
@@ -54,6 +54,19 @@ describe('shared recipe API validation', () => {
     const { instructions: _instructions, ...legacy } = recipe
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json([legacy])))
     await expect(loadSharedRecipes()).rejects.toThrow('invalid recipe')
+  })
+
+  it('completes shared recipe instructions with a validated response', async () => {
+    const instructions = 'Simmer the rice.\\nServe warm.'
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ id: 'legacy/recipe', instructions }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(updateSharedRecipeInstructions('legacy/recipe', instructions)).resolves.toEqual({ id: 'legacy/recipe', instructions })
+    expect(fetchMock).toHaveBeenCalledWith('/api/recipes/legacy%2Frecipe/instructions', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ instructions }) }))
+  })
+
+  it('rejects malformed shared instruction update responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ id: 5, instructions: 'Cook the rice.' })))
+    await expect(updateSharedRecipeInstructions('r1', 'Cook the rice.')).rejects.toThrow('invalid recipe update')
   })
 })
 

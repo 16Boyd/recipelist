@@ -27,12 +27,13 @@ describe('HTTP app factory', () => {
     recipeRows: unknown[]
     inserted: unknown
     insertValues: unknown[]
+    instructionUpdateValues: unknown[]
     failOn: string
     authCookie: string
   }
 
   beforeEach(async () => {
-    state = { authenticated: true, role: 'member', mfa: true, profile: appData, recipeRows: [recipe], inserted: recipe, insertValues: [], failOn: '', authCookie: '' }
+    state = { authenticated: true, role: 'member', mfa: true, profile: appData, recipeRows: [recipe], inserted: recipe, insertValues: [], instructionUpdateValues: [], failOn: '', authCookie: '' }
     staticRoot = await mkdtemp(join(tmpdir(), 'recipelist-test-'))
     await mkdir(join(staticRoot, 'assets'))
     await writeFile(join(staticRoot, 'index.html'), '<main>RecipeList test shell</main>')
@@ -54,6 +55,21 @@ describe('HTTP app factory', () => {
           return { rows: [{ app_data: state.profile }] as Row[], rowCount: 1 }
         }
         if (sql.includes('SELECT id, title, source')) return { rows: state.recipeRows as Row[], rowCount: state.recipeRows.length }
+        if (sql.startsWith('UPDATE recipes SET instructions = $2')) {
+          state.instructionUpdateValues = values ?? []
+          const id = values?.[0]
+          const instructions = values?.[1]
+          const rowIndex = state.recipeRows.findIndex((row) => Boolean(row) && typeof row === 'object' && (row as { id?: unknown }).id === id)
+          const current = rowIndex >= 0 ? state.recipeRows[rowIndex] as { id: string; instructions?: string } : undefined
+          if (!current || current.instructions?.trim() || typeof instructions !== 'string') return { rows: [], rowCount: 0 }
+          const updated = { ...current, instructions }
+          state.recipeRows = state.recipeRows.map((row, index) => index === rowIndex ? updated : row)
+          return { rows: [{ id: updated.id, instructions: updated.instructions }] as Row[], rowCount: 1 }
+        }
+        if (sql === 'SELECT id FROM recipes WHERE id = $1') {
+          const row = state.recipeRows.find((item) => Boolean(item) && typeof item === 'object' && (item as { id?: unknown }).id === values?.[0])
+          return { rows: row ? [{ id: (row as { id: string }).id }] as Row[] : [], rowCount: row ? 1 : 0 }
+        }
         if (sql.includes('INSERT INTO recipes')) {
           state.insertValues = values ?? []
           if (state.inserted === null) return { rows: [], rowCount: 0 }
@@ -185,6 +201,35 @@ describe('HTTP app factory', () => {
     const { instructions: _legacyInstructions, ...legacyRecipe } = recipe
     expect((await request('/api/recipes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(legacyRecipe) })).status).toBe(400)
     expect((await request('/api/recipes', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ ...recipe, instructions: '' }) })).status).toBe(400)
+  })
+
+  it('lets only admins complete blank shared recipe instructions without overwriting completed text', async () => {
+    const legacyRecipe = { ...recipe, instructions: '\t\n ' }
+    state.recipeRows = [legacyRecipe]
+    const body = JSON.stringify({ instructions: 'Roast the vegetables.\nServe warm.' })
+    expect((await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers: jsonHeaders, body })).status).toBe(403)
+    expect(state.instructionUpdateValues).toEqual([])
+
+    state.role = 'admin'
+    const completed = await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers: jsonHeaders, body })
+    expect(completed.status).toBe(200)
+    expect(await completed.json()).toEqual({ id: recipe.id, instructions: 'Roast the vegetables.\nServe warm.' })
+    expect(state.instructionUpdateValues).toEqual([recipe.id, 'Roast the vegetables.\nServe warm.'])
+    expect(state.recipeRows).toEqual([{ ...recipe, instructions: 'Roast the vegetables.\nServe warm.' }])
+
+    const conflict = await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ instructions: 'Replace these steps.' }) })
+    expect(conflict.status).toBe(409)
+    expect(state.recipeRows).toEqual([{ ...recipe, instructions: 'Roast the vegetables.\nServe warm.' }])
+  })
+
+  it('rejects invalid instruction completion and returns 404 for unknown shared recipes', async () => {
+    state.role = 'admin'
+    const headers = jsonHeaders
+    expect((await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers, body: JSON.stringify({ instructions: ' \n\t ' }) })).status).toBe(400)
+    expect((await request('/api/recipes/chicken-soup/instructions', { method: 'PUT', headers, body: JSON.stringify({ instructions: 'x'.repeat(12001) }) })).status).toBe(400)
+    const missing = await request('/api/recipes/no-such-recipe/instructions', { method: 'PUT', headers, body: JSON.stringify({ instructions: 'Add a step.' }) })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'Recipe not found' })
   })
 
   it('returns API 404 and masks unexpected route failures as a generic 500', async () => {

@@ -47,6 +47,13 @@ describe('ingredient normalization and substitutions', () => {
 
 describe('app data validation', () => {
   it('accepts valid app data and returns a validated shape', () => expect(parseAppData(validData)).toEqual(validData))
+  it('counts persisted recipe instruction limits in Unicode code points', () => {
+    const twelveThousandEmoji = '😀'.repeat(12000)
+    const withinLimit = { ...validData, recipes: [{ ...validData.recipes[0]!, instructions: twelveThousandEmoji }] }
+    const beyondLimit = { ...validData, recipes: [{ ...validData.recipes[0]!, instructions: `${twelveThousandEmoji}😀` }] }
+    expect(parseAppData(withinLimit).recipes[0]?.instructions).toBe(twelveThousandEmoji)
+    expect(() => parseAppData(beyondLimit)).toThrow(/invalid|incomplete/i)
+  })
   it('normalizes legacy pantry names and preserves tracked amounts', () => {
     const normalized = parseAppData({ ...validData, pantry: ['rice', { name: 'salt', amount: '2 tsp' }] })
     expect(normalized.pantry).toEqual([{ name: 'rice', amount: '' }, { name: 'salt', amount: '2 tsp' }])

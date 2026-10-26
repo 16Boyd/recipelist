@@ -92,7 +92,7 @@ function validRecipe(value: unknown): value is Recipe {
     && typeof recipe.servings === 'number'
     && typeof recipe.image === 'string'
     && typeof recipe.description === 'string'
-    && (recipe.instructions === undefined || (typeof recipe.instructions === 'string' && recipe.instructions.length <= 12000))
+    && (recipe.instructions === undefined || (typeof recipe.instructions === 'string' && Array.from(recipe.instructions).length <= 12000))
     && Array.isArray(recipe.ingredients)
     && recipe.ingredients.length > 0
     && recipe.ingredients.every((item) => item

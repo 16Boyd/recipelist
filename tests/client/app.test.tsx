@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../src/App'
@@ -6,12 +6,12 @@ import type { AppData, Recipe } from '../../src/types'
 
 const mocks = vi.hoisted(() => ({
   session: { data: { user: { id: 'user-1', email: 'alex@example.com' } } as { user: { id: string; email: string } } | null, isPending: false },
-  apiRequest: vi.fn(), loadProfile: vi.fn(), saveProfile: vi.fn(), loadCurrentUserRole: vi.fn(), loadSharedRecipes: vi.fn(), insertSharedRecipe: vi.fn(), signOut: vi.fn(),
+  apiRequest: vi.fn(), loadProfile: vi.fn(), saveProfile: vi.fn(), loadCurrentUserRole: vi.fn(), loadSharedRecipes: vi.fn(), insertSharedRecipe: vi.fn(), updateSharedRecipeInstructions: vi.fn(), signOut: vi.fn(),
 }))
 vi.mock('../../src/authClient', () => ({ authClient: { useSession: () => mocks.session, signOut: mocks.signOut } }))
 vi.mock('../../src/api', () => ({ apiRequest: mocks.apiRequest, errorMessage: (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback }))
 vi.mock('../../src/profileStorage', () => ({ loadProfile: mocks.loadProfile, saveProfile: mocks.saveProfile }))
-vi.mock('../../src/recipeStorage', () => ({ loadCurrentUserRole: mocks.loadCurrentUserRole, loadSharedRecipes: mocks.loadSharedRecipes, insertSharedRecipe: mocks.insertSharedRecipe }))
+vi.mock('../../src/recipeStorage', () => ({ loadCurrentUserRole: mocks.loadCurrentUserRole, loadSharedRecipes: mocks.loadSharedRecipes, insertSharedRecipe: mocks.insertSharedRecipe, updateSharedRecipeInstructions: mocks.updateSharedRecipeInstructions }))
 
 const shared: Recipe[] = [
   { id: 'chicken-meal', title: 'Chicken and Rice', source: 'Test Kitchen', category: 'Dinner', time: 25, servings: 2, image: '', description: 'A simple dinner.', instructions: 'Cook rice.\nBrown chicken.', ingredients: [{ name: 'ground chicken', amount: '1 lb' }, { name: 'rice', amount: '1 cup' }, { name: 'lemon', amount: '1' }] },
@@ -19,12 +19,13 @@ const shared: Recipe[] = [
 ]
 const userData = (): AppData => ({ recipes: [], pantry: [{ name: 'chicken tenders', amount: '' }, { name: 'rice', amount: '' }], shopping: [{ id: 'salt', name: 'salt', checked: false }, { id: 'oats', name: 'oats', checked: true }] })
 
-async function mountReady(initial = userData(), recipes = shared) {
+async function mountReady(initial = userData(), recipes = shared, role: 'member' | 'admin' = 'member') {
   mocks.apiRequest.mockResolvedValue({ user: { id: 'user-1', email: 'alex@example.com', twoFactorEnabled: true }, role: 'member', needsMfaReauthentication: false })
   mocks.loadProfile.mockResolvedValue(initial)
-  mocks.loadCurrentUserRole.mockResolvedValue('member')
+  mocks.loadCurrentUserRole.mockResolvedValue(role)
   mocks.loadSharedRecipes.mockResolvedValue(recipes)
   mocks.saveProfile.mockResolvedValue(undefined)
+  mocks.updateSharedRecipeInstructions.mockImplementation(async (id: string, instructions: string) => ({ id, instructions }))
   const result = render(<App />)
   await screen.findByRole('heading', { name: 'Your kitchen, sorted.' })
   return result
@@ -193,6 +194,101 @@ describe('pantry, recipes, and shopping list flows', () => {
     await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalled())
     const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData
     expect(saved.recipes[0]?.instructions).toBe('Rinse rice.\nCook until tender.')
+  })
+
+  it('allows 12,000 non-BMP code points in newly added recipe instructions', async () => {
+    const user = userEvent.setup()
+    await mountReady()
+    await user.click(screen.getByRole('button', { name: /Add recipe/ }))
+    await user.type(screen.getByRole('textbox', { name: 'Recipe name' }), 'Emoji recipe')
+    await user.type(screen.getByRole('textbox', { name: /Ingredients/ }), 'rice | 1 cup')
+    const instructions = '😀'.repeat(12000)
+    const textarea = screen.getByRole('textbox', { name: 'Instructions' })
+    expect(textarea).not.toHaveAttribute('maxLength')
+    fireEvent.change(textarea, { target: { value: instructions } })
+    await user.click(screen.getByRole('button', { name: 'Save recipe' }))
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalled())
+    const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData
+    expect(saved.recipes[0]?.instructions).toBe(instructions)
+  })
+
+  it('lets a user add instructions to a legacy private recipe and preserves its other data', async () => {
+    const user = userEvent.setup()
+    const privateRecipe: Recipe = { ...shared[0]!, id: 'private-legacy', instructions: '' }
+    await mountReady({ ...userData(), recipes: [privateRecipe] }, [])
+    await user.click(await screen.findByRole('button', { name: 'View Chicken and Rice' }))
+    expect(screen.getByText('No instructions have been added for this recipe yet.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    const instructions = ['Roast chicken.', 'Serve with rice.'].join('\n')
+    await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), instructions)
+    await user.click(screen.getByRole('button', { name: 'Save instructions' }))
+    await waitFor(() => {
+      const saved = mocks.saveProfile.mock.calls.at(-1)?.[0] as AppData | undefined
+      expect(saved?.recipes[0]).toEqual({ ...privateRecipe, instructions })
+    })
+    expect(screen.getByRole('heading', { name: 'Instructions' }).parentElement).toHaveTextContent('Roast chicken. Serve with rice.')
+  })
+
+  it('allows 12,000 non-BMP code points when completing legacy shared instructions', async () => {
+    const user = userEvent.setup()
+    const legacyShared = { ...shared[1]!, instructions: '' }
+    await mountReady(userData(), [legacyShared], 'admin')
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    const instructions = '😀'.repeat(12000)
+    const textarea = screen.getByRole('textbox', { name: 'Recipe instructions' })
+    expect(textarea).not.toHaveAttribute('maxLength')
+    fireEvent.change(textarea, { target: { value: instructions } })
+    await user.click(screen.getByRole('button', { name: 'Save instructions' }))
+    await waitFor(() => expect(mocks.updateSharedRecipeInstructions).toHaveBeenCalledWith('soup', instructions))
+  })
+
+  it('lets an admin complete a blank shared recipe and hides the control from members', async () => {
+    const user = userEvent.setup()
+    const legacyShared = { ...shared[1]!, instructions: '' }
+    const firstApp = await mountReady(userData(), [legacyShared], 'admin')
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    const instructions = ['Simmer tomatoes.', 'Stir in cream.'].join('\n')
+    await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), instructions)
+    await user.click(screen.getByRole('button', { name: 'Save instructions' }))
+    await waitFor(() => expect(mocks.updateSharedRecipeInstructions).toHaveBeenCalledWith('soup', instructions))
+    expect(screen.getByRole('heading', { name: 'Instructions' }).parentElement).toHaveTextContent('Simmer tomatoes. Stir in cream.')
+
+    firstApp.unmount()
+    vi.clearAllMocks()
+    await mountReady(userData(), [legacyShared], 'member')
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    expect(screen.queryByRole('button', { name: 'Add instructions' })).not.toBeInTheDocument()
+  })
+
+  it('keeps an instruction draft and reports shared-save errors', async () => {
+    const user = userEvent.setup()
+    await mountReady(userData(), [{ ...shared[1]!, instructions: '' }], 'admin')
+    mocks.updateSharedRecipeInstructions.mockRejectedValueOnce(new Error('Recipe instructions have already been added'))
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    await user.click(screen.getByRole('button', { name: 'Add instructions' }))
+    const draft = 'Cook the tomatoes.'
+    await user.type(screen.getByRole('textbox', { name: 'Recipe instructions' }), draft)
+    await user.click(screen.getByRole('button', { name: 'Save instructions' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Recipe instructions have already been added')
+    expect(screen.getByRole('textbox', { name: 'Recipe instructions' })).toHaveValue(draft)
+  })
+
+  it('closes recipe details when the signed-in account changes', async () => {
+    const user = userEvent.setup()
+    const app = await mountReady(userData(), shared, 'admin')
+    await user.click(await screen.findByRole('button', { name: 'View Tomato Soup' }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    mocks.session.data = { user: { id: 'user-2', email: 'sam@example.com' } }
+    mocks.apiRequest.mockResolvedValue({ user: { id: 'user-2', email: 'sam@example.com', twoFactorEnabled: true }, role: 'member', needsMfaReauthentication: false })
+    mocks.loadProfile.mockResolvedValue(userData())
+    mocks.loadCurrentUserRole.mockResolvedValue('member')
+    mocks.loadSharedRecipes.mockResolvedValue([])
+    app.rerender(<App />)
+    await waitFor(() => expect(mocks.loadProfile).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('marks each repeated recipe ingredient according to its own required quantity', async () => {

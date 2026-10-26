@@ -51,7 +51,7 @@ Use a private network or firewall rules to restrict access as appropriate. Do no
 
 - Users create their own accounts from the sign-up screen with an email and password. Passwords must be 12–128 characters and include a lowercase letter, an uppercase letter, a number, and a symbol. Registration creates exactly one profile and a `member` role for each account.
 - Authenticator-app TOTP MFA is mandatory. New users enroll and verify an authenticator during setup. The server records which session completed TOTP verification and permits profile and recipe access only for that verified session. Users can sign in with a current TOTP code or a one-use backup code. Sessions use an HttpOnly cookie; the server keeps session cookie caching disabled.
-- Members can manage their own pantry, shopping list, and private recipes. Signed-in users can read the shared recipe catalog. Only admins can add shared recipes.
+- Members can manage their own pantry, shopping list, and private recipes, and can add instructions to their own private recipes that do not have them yet. Signed-in users can read the shared recipe catalog. Only admins can add shared recipes or complete blank instructions on shared recipes.
 - There is no in-app administrator or invitation screen. To make your first admin, sign up through the app, complete TOTP setup and sign in, then run this on the server from the project checkout after `npm install` and `npm run build`:
 
   ```sh

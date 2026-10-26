@@ -5,10 +5,16 @@ import { authClient, type AuthUser } from './authClient'
 import { createId, makeRecipe, matchRecipes, normalizeName } from './lib'
 import MfaGate from './MfaGate'
 import { loadProfile, saveProfile } from './profileStorage'
-import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes } from './recipeStorage'
+import { insertSharedRecipe, loadCurrentUserRole, loadSharedRecipes, updateSharedRecipeInstructions } from './recipeStorage'
 import type { AppData, Ingredient, PantryItem, Recipe, RecipeMatch, UserRole } from './types'
 
 type Section = 'discover' | 'recipes' | 'pantry' | 'shopping'
+type RecipeSource = 'shared' | 'private'
+
+/** Count instruction characters in code points so the limit matches PostgreSQL text length. */
+function instructionCharacterCount(value: string): number {
+  return Array.from(value).length
+}
 
 /** Build a sorted list of unique ingredient names used by the recipe collection. */
 function getRecipeIngredientCatalog(recipes: Recipe[]): string[] {
@@ -274,7 +280,7 @@ function App() {
   if (securityStatus === 'setup') return <MfaGate key={user.id} userId={user.id} email={user.email} onSetupComplete={() => window.location.reload()} onSignOut={() => { void signOut() }} signingOut={signingOut} accountError={accountError} />
   if (profileStatus === 'error') return <StatusScreen title="We couldn’t load your kitchen" message={profileError} onRetry={() => { setProfileStatus('loading'); setProfileError(''); setLoadedUserId(null); setProfileAttempt((attempt) => attempt + 1) }} />
   if (profileStatus === 'loading' || loadedUserId !== user.id || !data) return <StatusScreen title="Loading your kitchen…" />
-  return <KitchenApp user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
+  return <KitchenApp key={user.id} user={user} data={data} onDataChange={updateProfileData} saveStatus={saveStatus} saveError={profileError} accountError={accountError} signingOut={signingOut} onRetrySave={() => setSaveAttempt((attempt) => attempt + 1)} onSignOut={() => { void signOut() }} />
 }
 
 /** Render a loading or error state with an optional retry action. */
@@ -292,6 +298,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   const [onlyCookable, setOnlyCookable] = useState(false)
   const [showRecipeForm, setShowRecipeForm] = useState(false)
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
+  const [selectedRecipeSource, setSelectedRecipeSource] = useState<RecipeSource | null>(null)
   const [toast, setToast] = useState('')
   const [role, setRole] = useState<UserRole | null>(null)
   const [roleUserId, setRoleUserId] = useState<string | null>(null)
@@ -323,7 +330,14 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
   }, [user.id, catalogAttempt])
 
   const closeRecipeForm = useCallback(() => setShowRecipeForm(false), [])
-  const closeSelectedRecipe = useCallback(() => setSelectedRecipe(null), [])
+  const closeSelectedRecipe = useCallback(() => { setSelectedRecipe(null); setSelectedRecipeSource(null) }, [])
+  /** Capture whether a recipe came from the shared catalog or this user's profile. */
+  function openRecipe(recipe: Recipe) {
+    setSelectedRecipe(recipe)
+    setSelectedRecipeSource(sharedRecipes.some((item) => item.id === recipe.id) ? 'shared' : 'private')
+  }
+
+  useEffect(() => { closeSelectedRecipe() }, [user.id, closeSelectedRecipe])
 
   const initials = user.email?.trim().slice(0, 1).toLocaleUpperCase() || 'U'
   useEffect(() => {
@@ -477,6 +491,26 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
     }
   }
 
+  /** Add instructions to a blank private recipe or an admin-owned shared recipe. */
+  async function addInstructionsToRecipe(recipe: Recipe, source: RecipeSource, instructions: string) {
+    if (!instructions.trim() || instructionCharacterCount(instructions) > 12000) throw new Error('Enter instructions of 12,000 characters or fewer.')
+    if (source === 'shared') {
+      if (role !== 'admin' || roleUserId !== user.id || roleError) throw new Error('Admin access could not be verified.')
+      const updated = await updateSharedRecipeInstructions(recipe.id, instructions)
+      setSharedRecipes((current) => current.map((item) => item.id === updated.id ? { ...item, instructions: updated.instructions } : item))
+      setSelectedRecipe((current) => current?.id === updated.id ? { ...current, instructions: updated.instructions } : current)
+    } else {
+      updateData((current) => ({
+        ...current,
+        recipes: current.recipes.map((item) => item.id === recipe.id && !(item.instructions ?? '').trim()
+          ? { ...item, instructions }
+          : item),
+      }))
+      setSelectedRecipe((current) => current?.id === recipe.id ? { ...current, instructions } : current)
+    }
+    setToast('Instructions saved')
+  }
+
   /** Add ingredients from the selected recipe that are not already in the pantry. */
   function addRecipeIngredientsToPantry(recipe: Recipe) {
     const known = new Set(data.pantry.map((item) => normalizeName(item.name)))
@@ -567,13 +601,13 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
             query={query}
             filteredMatches={filteredMatches}
             bestMatches={bestMatches}
-            onOpen={setSelectedRecipe}
+            onOpen={openRecipe}
             onAddMissing={addMissing}
             onShowRecipes={() => setSection('recipes')}
             onShowPantry={() => setSection('pantry')}
           />}
-          {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={setSelectedRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
-          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={getRecipeIngredientCatalog(recipes)} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={setSelectedRecipe} onAddMissing={addMissing} />}
+          {section === 'recipes' && <RecipesView matches={filteredMatches} total={recipes.length} query={query} onlyCookable={onlyCookable} onToggleCookable={() => setOnlyCookable((value) => !value)} onOpen={openRecipe} onAddMissing={addMissing} onAddRecipe={() => setShowRecipeForm(true)} />}
+          {section === 'pantry' && <PantryView pantry={data.pantry} catalog={getRecipeIngredientCatalog(recipes)} entry={pantryEntry} amount={pantryAmount} onEntryChange={setPantryEntry} onAmountChange={setPantryAmount} onSubmit={addPantryItem} onRemove={removePantryItem} onAmountUpdate={updatePantryAmount} onAddCatalog={addCatalogIngredient} matches={matches} onOpen={openRecipe} onAddMissing={addMissing} />}
           {section === 'shopping' && <ShoppingView items={data.shopping} entry={shoppingEntry} onEntryChange={setShoppingEntry} onSubmit={addShoppingEntry} onToggle={toggleShoppingItem} onRemove={(id) => updateData((current) => ({ ...current, shopping: current.shopping.filter((item) => item.id !== id) }))} onClearChecked={clearChecked} />}
 
           <footer className="app-footer"><span>Made for slower evenings & better dinners.</span><span><span className="footer-heart">♥</span> {saveStatus === 'saved' ? `Saved to ${user.email ?? 'your profile'}` : saveStatus === 'saving' ? 'Saving to your profile…' : 'Could not save to your profile'}</span></footer>
@@ -585,7 +619,7 @@ function KitchenApp({ user, data, onDataChange, saveStatus, saveError, accountEr
       </main>
 
       {showRecipeForm && <RecipeForm onClose={closeRecipeForm} onSave={saveRecipe} onSaveShared={saveSharedRecipe} isAdmin={role === 'admin' && roleUserId === user.id && !roleError} savingShared={catalogSaving} />}
-      {selectedRecipe && <RecipeDetails recipe={selectedRecipe} match={matches.find((item) => item.recipe.id === selectedRecipe.id)} onClose={closeSelectedRecipe} onAddMissing={addMissing} onAddIngredients={addRecipeIngredientsToPantry} />}
+      {selectedRecipe && selectedRecipeSource && <RecipeDetails key={selectedRecipe.id} recipe={selectedRecipe} source={selectedRecipeSource} match={matches.find((item) => item.recipe.id === selectedRecipe.id)} canAddInstructions={selectedRecipeSource === 'private' || (role === 'admin' && roleUserId === user.id && !roleError)} onSaveInstructions={addInstructionsToRecipe} onClose={closeSelectedRecipe} onAddMissing={addMissing} onAddIngredients={addRecipeIngredientsToPantry} />}
       {toast && <div className="toast" role="status"><span className="toast-check"><Icon name="check" size={16} /></span>{toast}</div>}
       <span className="sr-only" aria-live="polite">{`${shoppingCount} items on shopping list`}</span>
     </div>
@@ -775,7 +809,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
     if (!title.trim()) { setError('Give your recipe a name to continue.'); return }
     if (!ingredients.length) { setError('Add at least one ingredient, one per line.'); return }
     if (!instructions.trim()) { setError('Add instructions for your recipe to continue.'); return }
-    if (instructions.length > 12000) { setError('Instructions must be 12,000 characters or fewer.'); return }
+    if (instructionCharacterCount(instructions) > 12000) { setError('Instructions must be 12,000 characters or fewer.'); return }
     const recipe = makeRecipe(title, source, category, Math.max(1, Number(time) || 30), Math.max(1, Number(servings) || 2), ingredients, instructions)
     if (destination === 'shared') {
       try { await onSaveShared(recipe) }
@@ -792,7 +826,7 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
       <label className="form-field"><span>Servings</span><input type="number" min="1" value={servings} onChange={(event) => setServings(event.target.value)} /></label>
       {isAdmin && <label className="form-field wide"><span>Save to</span><select value={destination} onChange={(event) => setDestination(event.target.value as 'personal' | 'shared')}><option value="personal">My private recipes</option><option value="shared">Shared RecipeList catalog</option></select><small className="field-hint">Shared recipes are available to every RecipeList user.</small></label>}
       <label className="form-field wide"><span>Ingredients <small>One per line · ingredient | amount</small></span><textarea value={ingredientsText} onChange={(event) => setIngredientsText(event.target.value)} placeholder={'chickpeas | 1 can\nlemon | 1\nplain yogurt | ½ cup'} rows={5} required /></label>
-      <label className="form-field wide"><span>Instructions</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={'Add each cooking step on a new line.'} rows={6} maxLength={12000} required /></label>
+      <label className="form-field wide"><span>Instructions</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={'Add each cooking step on a new line.'} rows={6} required /></label>
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit" disabled={savingShared}>{savingShared ? 'Saving…' : 'Save recipe'} {!savingShared && <Icon name="arrow" size={16} />}</button></div>
     </form>
@@ -800,11 +834,43 @@ function RecipeForm({ onClose, onSave, onSaveShared, isAdmin, savingShared }: { 
 }
 
 /** Render a recipe’s ingredients and actions for missing items or pantry updates. */
-function RecipeDetails({ recipe, match, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; match?: RecipeMatch; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
+function RecipeDetails({ recipe, source, match, canAddInstructions, onSaveInstructions, onClose, onAddMissing, onAddIngredients }: { recipe: Recipe; source: RecipeSource; match?: RecipeMatch; canAddInstructions: boolean; onSaveInstructions: (recipe: Recipe, source: RecipeSource, instructions: string) => Promise<void>; onClose: () => void; onAddMissing: (match: RecipeMatch) => void; onAddIngredients: (recipe: Recipe) => void }) {
+  const [editingInstructions, setEditingInstructions] = useState(false)
+  const [instructionsDraft, setInstructionsDraft] = useState(recipe.instructions ?? '')
+  const [instructionError, setInstructionError] = useState('')
+  const [savingInstructions, setSavingInstructions] = useState(false)
+
+  /** Validate and submit the completion of a blank recipe instruction field. */
+  async function submitInstructions(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!instructionsDraft.trim()) { setInstructionError('Add instructions to continue.'); return }
+    if (instructionCharacterCount(instructionsDraft) > 12000) { setInstructionError('Instructions must be 12,000 characters or fewer.'); return }
+    setSavingInstructions(true)
+    setInstructionError('')
+    try {
+      await onSaveInstructions(recipe, source, instructionsDraft)
+      setEditingInstructions(false)
+    } catch (error) {
+      setInstructionError(error instanceof Error ? error.message : 'Could not save the instructions. Please try again.')
+    } finally {
+      setSavingInstructions(false)
+    }
+  }
+
   return <Modal onClose={onClose} title={recipe.title} description={`${recipe.source} · ${recipe.time} minutes · ${recipe.servings} servings`} wide>
     <div className="detail-image" style={{ backgroundImage: `linear-gradient(180deg, transparent, rgba(24, 37, 29, .28)), url("${recipe.image}")` }}><span className="source-pill">{recipe.source}</span><span className="detail-category">{recipe.category}</span></div>
     <p className="detail-description">{recipe.description}</p>
-    <section className="detail-instructions" aria-labelledby="recipe-instructions-heading"><span className="section-kicker">HOW TO MAKE IT</span><h3 id="recipe-instructions-heading">Instructions</h3>{recipe.instructions?.trim() ? <p>{recipe.instructions}</p> : <p className="detail-instructions-empty">No instructions have been added for this recipe yet.</p>}</section>
+    <section className="detail-instructions" aria-labelledby="recipe-instructions-heading"><span className="section-kicker">HOW TO MAKE IT</span><h3 id="recipe-instructions-heading">Instructions</h3>{recipe.instructions?.trim()
+      ? <p>{recipe.instructions}</p>
+      : <>
+        <p className="detail-instructions-empty">No instructions have been added for this recipe yet.</p>
+        {canAddInstructions && !editingInstructions && <button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(true) }}>Add instructions</button>}
+        {editingInstructions && <form className="recipe-form instruction-editor" onSubmit={submitInstructions}>
+          <label className="form-field wide"><span>Instructions</span><textarea aria-label="Recipe instructions" autoFocus value={instructionsDraft} onChange={(event) => setInstructionsDraft(event.target.value)} placeholder="Add each cooking step on a new line." rows={6} required /></label>
+          {instructionError && <div className="form-error" role="alert">{instructionError}</div>}
+          <div className="modal-actions"><button type="button" className="button button-outline" onClick={() => { setInstructionsDraft(recipe.instructions ?? ''); setInstructionError(''); setEditingInstructions(false) }}>Cancel</button><button className="button button-dark" type="submit" disabled={savingInstructions}>{savingInstructions ? 'Saving…' : 'Save instructions'}</button></div>
+        </form>}
+      </>}</section>
     {match && <div className="detail-match"><span className="match-icon"><Icon name={match.missing.length ? 'leaf' : 'check'} size={14} /></span><strong>{match.percent}% of ingredients in your pantry</strong><span>{match.missing.length ? `${match.missing.length} missing` : 'Ready to cook'}</span></div>}
     <div className="detail-ingredients-heading"><div><span className="section-kicker">THE SHOPPING LIST</span><h3>Ingredients <small>{recipe.ingredients.length}</small></h3></div><button className="text-button" onClick={() => onAddIngredients(recipe)}>Add all to pantry <Icon name="plus" size={15} /></button></div>
     <ul className="detail-ingredients">{recipe.ingredients.map((ingredient, index) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateAppData, validateRecipe, type RecipeInput } from '../../server/validation.js'
+import { validateAppData, validateRecipe, validateRecipeInstructions, type RecipeInput } from '../../server/validation.js'
 
 const recipe: RecipeInput = {
   id: 'recipe-1', title: 'Chicken soup', source: 'Kitchen', category: 'Dinner', time: 30, servings: 4,
@@ -7,6 +7,17 @@ const recipe: RecipeInput = {
 }
 
 describe('server data validation', () => {
+  it('validates nonblank recipe instruction text and its length limit', () => {
+    const twelveThousandEmoji = '😀'.repeat(12000)
+    expect(validateRecipeInstructions('Cook the rice.')).toBe(true)
+    expect(validateRecipeInstructions(' '.repeat(4))).toBe(false)
+    expect(validateRecipeInstructions('x'.repeat(12000))).toBe(true)
+    expect(validateRecipeInstructions('x'.repeat(12001))).toBe(false)
+    expect(validateRecipeInstructions(twelveThousandEmoji)).toBe(true)
+    expect(validateRecipeInstructions(`${twelveThousandEmoji}😀`)).toBe(false)
+    expect(validateRecipeInstructions(null)).toBe(false)
+  })
+
   it('accepts a valid recipe and validates the nested ingredient shape', () => {
     expect(validateRecipe(recipe)).toBe(true)
     expect(validateRecipe({ ...recipe, ingredients: [{ name: 'Chicken', amount: '' }] })).toBe(true)
@@ -28,6 +39,9 @@ describe('server data validation', () => {
     expect(validateRecipe({ ...recipe, instructions: '  ' })).toBe(false)
     expect(validateRecipe({ ...recipe, instructions: 'x'.repeat(12001) })).toBe(false)
     expect(validateRecipe({ ...recipe, instructions: 'x'.repeat(12000) })).toBe(true)
+    const twelveThousandEmoji = '😀'.repeat(12000)
+    expect(validateRecipe({ ...recipe, instructions: twelveThousandEmoji })).toBe(true)
+    expect(validateRecipe({ ...recipe, instructions: `${twelveThousandEmoji}😀` })).toBe(false)
     expect(validateRecipe({ ...recipe, ingredients: Array.from({ length: 201 }, () => ({ name: 'x', amount: '1' })) })).toBe(false)
     expect(validateRecipe({ ...recipe, ingredients: Array.from({ length: 200 }, () => ({ name: 'x', amount: '1' })) })).toBe(true)
   })
@@ -40,6 +54,9 @@ describe('server data validation', () => {
     expect(validateAppData({ ...appData, recipes: [legacyRecipe] })).toBe(true)
     expect(validateAppData({ ...appData, recipes: [{ ...recipe, instructions: 123 }] })).toBe(false)
     expect(validateAppData({ ...appData, recipes: [{ ...recipe, instructions: 'x'.repeat(12001) }] })).toBe(false)
+    const twelveThousandEmoji = '😀'.repeat(12000)
+    expect(validateAppData({ ...appData, recipes: [{ ...recipe, instructions: twelveThousandEmoji }] })).toBe(true)
+    expect(validateAppData({ ...appData, recipes: [{ ...recipe, instructions: `${twelveThousandEmoji}😀` }] })).toBe(false)
     expect(validateAppData({ ...appData, recipes: [null] })).toBe(false)
     expect(validateAppData({ ...appData, pantry: ['  '] })).toBe(false)
     expect(validateAppData({ ...appData, pantry: [{ name: 'salt', amount: '2 tsp' }] })).toBe(true)

@@ -34,3 +34,16 @@ export async function loadSharedRecipes(): Promise<Recipe[]> {
 export async function insertSharedRecipe(recipe: Recipe): Promise<void> {
   await apiRequest<void>('/api/recipes', { method: 'POST', body: JSON.stringify(recipe) })
 }
+
+/** Add instructions to a blank shared recipe and validate the response. */
+export async function updateSharedRecipeInstructions(id: string, instructions: string): Promise<{ id: string; instructions: string }> {
+  const result = await apiRequest<unknown>(`/api/recipes/${encodeURIComponent(id)}/instructions`, {
+    method: 'PUT', body: JSON.stringify({ instructions }),
+  })
+  if (!result || typeof result !== 'object'
+    || typeof (result as { id?: unknown }).id !== 'string'
+    || typeof (result as { instructions?: unknown }).instructions !== 'string') {
+    throw new Error('The server returned an invalid recipe update.')
+  }
+  return { id: (result as { id: string }).id, instructions: (result as { instructions: string }).instructions }
+}

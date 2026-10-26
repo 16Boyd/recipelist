@@ -27,6 +27,16 @@ function isText(value: unknown, max = 500): value is string {
   return typeof value === 'string' && value.length <= max
 }
 
+/** Match PostgreSQL text length by counting Unicode code points instead of UTF-16 units. */
+function withinCodePointLimit(value: string, max: number): boolean {
+  return Array.from(value).length <= max
+}
+
+/** Validate nonblank recipe instructions within the persisted text limit. */
+export function validateRecipeInstructions(value: unknown): value is string {
+  return typeof value === 'string' && withinCodePointLimit(value, 12000) && value.trim().length > 0
+}
+
 /** Validate untrusted recipe JSON against field, length, range, and ingredient limits. */
 export function validateRecipe(value: unknown): value is RecipeInput
 export function validateRecipe(value: unknown, requireInstructions: false): value is Omit<RecipeInput, 'instructions'> & { instructions?: string }
@@ -41,8 +51,8 @@ export function validateRecipe(value: unknown, requireInstructions = true): valu
     && isText(value.image, 2048)
     && isText(value.description, 4000)
     && (requireInstructions
-      ? isText(value.instructions, 12000) && value.instructions.trim().length > 0
-      : value.instructions === undefined || isText(value.instructions, 12000))
+      ? validateRecipeInstructions(value.instructions)
+      : value.instructions === undefined || (typeof value.instructions === 'string' && withinCodePointLimit(value.instructions, 12000)))
     && Array.isArray(value.ingredients) && value.ingredients.length <= 200
     && value.ingredients.every((ingredient) => isRecord(ingredient)
       && isText(ingredient.name, 160) && ingredient.name.trim().length > 0
