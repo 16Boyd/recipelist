@@ -192,6 +192,14 @@ describe('recipe matching and construction', () => {
     const unitless = recipe('unitless-rice', 'Rice', [{ name: 'rice', amount: '2' }])
     expect(matchRecipes([unitless], [{ name: 'rice', amount: '2 scoops' }])[0]?.missing).toEqual(unitless.ingredients)
   })
+  it('matches recognized count units to ingredient-name suffixes without changing volume units', () => {
+    const chicken = recipe('chicken-breast-count', 'Chicken', [{ name: 'chicken breast', amount: '2' }])
+    expect(matchRecipes([chicken], [{ name: 'chicken breast', amount: '2 breasts' }])[0]?.available).toEqual(chicken.ingredients)
+    expect(matchRecipes([chicken], [{ name: 'chicken breast', amount: '1 breast' }])[0]?.missing).toEqual(chicken.ingredients)
+
+    const stock = recipe('chicken-stock-volume', 'Chicken stock', [{ name: 'chicken stock', amount: '2 cups' }])
+    expect(matchRecipes([stock], [{ name: 'chicken stock', amount: '473.176 ml' }])[0]?.available).toEqual(stock.ingredients)
+  })
   it('keeps zero-quantity requirements available when a matching pantry ingredient exists', () => {
     const zero = recipe('zero-rice', 'Rice', [{ name: 'rice', amount: '0 cup' }])
     expect(matchRecipes([zero], [{ name: 'rice', amount: '2 oz' }])[0]?.available).toEqual(zero.ingredients)

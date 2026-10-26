@@ -186,7 +186,7 @@ function parseQuantity(value: string, ingredientName = ''): { value: number; dim
     : rawUnit.replace(/(ches|shes|sses|xes|zes|oes)$/, (plural) => plural.slice(0, -2)).replace(/s$/, '')
   if (countNounUnits.has(unit)) return { value: count, dimension: 'count:each' }
   const conversion = quantityUnits[unit]
-  if (conversion) {
+  if (conversion && (conversion[0] === 'volume' || conversion[0] === 'weight')) {
     const converted = count * conversion[1]
     return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
   }
@@ -197,6 +197,11 @@ function parseQuantity(value: string, ingredientName = ''): { value: number; dim
   const isIngredientNoun = unitWords.length > 0
     && unitWords.length <= ingredientWords.length
     && ingredientWords.slice(-unitWords.length).join(' ') === unitName
+  if (conversion?.[0].startsWith('count:') && isIngredientNoun) return { value: count, dimension: 'count:each' }
+  if (conversion) {
+    const converted = count * conversion[1]
+    return Number.isFinite(converted) ? { value: converted, dimension: conversion[0] } : undefined
+  }
   if (isIngredientNoun) return { value: count, dimension: 'count:each' }
   return { value: count, dimension: `unknown:${unit}` }
 }
