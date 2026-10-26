@@ -120,6 +120,17 @@ describe('pantry, recipes, and shopping list flows', () => {
     })
   })
 
+  it('shows every recorded amount for duplicate ingredients in the pantry catalog', async () => {
+    const user = userEvent.setup()
+    await mountReady({ ...userData(), pantry: [{ name: 'rice', amount: '1 cup' }, { name: 'RICE', amount: '4 cups' }] })
+    await user.click(screen.getAllByRole('button', { name: 'Pantry' })[0]!)
+    const riceRow = Array.from(document.querySelectorAll('.pantry-catalog li'))
+      .find((row) => row.querySelector('span:first-child')?.textContent === 'rice')
+    const trackedAmounts = riceRow?.querySelector('.pantry-tracked')
+    expect(trackedAmounts).toHaveTextContent('Tracked (2 entries) · 1 cup; 4 cups')
+    expect(trackedAmounts).not.toHaveClass('muted')
+  })
+
   it('adds and removes pantry items and prevents normalized duplicates', async () => {
     const user = userEvent.setup()
     await mountReady()

@@ -501,4 +501,9 @@ h1 { margin-bottom: 5px; color: #29372e; font: 750 30px/1.15 'Manrope', sans-ser
 .pantry-items input, .inline-add input + input { min-width: 9rem; width: 10rem; padding: .55rem .7rem; border: 1px solid var(--line, #e8e8e3); border-radius: .5rem; }
 .pantry-items li > input { flex: 0 1 10rem; min-width: 0; margin-left: auto; }
 .pantry-catalog-heading { margin-top: 1.5rem; }
-.pantry-catalog li > .muted, .pantry-catalog li > button { margin-left: auto; }
+.pantry-catalog li { flex-wrap: wrap; }
+.pantry-catalog li > .pantry-tracked, .pantry-catalog li > button { margin-left: auto; }
+.pantry-catalog .pantry-tracked { max-width: 70%; color: #59665c; font-size: 10px; overflow-wrap: anywhere; text-align: right; }
+@media (max-width: 600px) {
+  .pantry-catalog .pantry-tracked { display: block; flex: 1 0 100%; max-width: none; margin-left: 0; font-size: 9px; line-height: 1.4; text-align: left; }
+}
